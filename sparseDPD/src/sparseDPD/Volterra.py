@@ -2,13 +2,14 @@
 import numpy as np
 
 class Volterra:
-    def __init__(self, num_nl_orders, num_memory_levels, dataset):
+    def __init__(self, num_nl_orders, num_memory_levels, dataset, forward=True):
         """Class to create a Volterra model"""
         self.num_nl_orders = num_nl_orders
         self.num_memory_levels = num_memory_levels
         self.dataset = dataset
         input_data = dataset.input_data
         output_data = dataset.output_data
+        self.forward = forward
 
         self.A = self.build_coeff_matrix(input_data, output_data) # Coefficient matrix
 
@@ -64,8 +65,10 @@ class Volterra:
         return self.A
     
     
-    def calculate_volterra_nmse(self, input, output):
+    def calculate_volterra_nmse(self, dataset):
         """Calculate how closely the volterra model fits the actual PA output"""
+        input = dataset.input_data # Input data
+        output = dataset.output_data # Actual PA output data
 
         volterra_output = self.build_y(input).squeeze()
         actual_output = output[self.num_memory_levels:].squeeze()

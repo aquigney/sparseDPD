@@ -5,7 +5,6 @@ src/sparseDPD/Dataset.py
 src/sparseDPD/NeuralNetwork.py
 src/sparseDPD/Volterra.py
 src/sparseDPD/__init__.py
-src/sparseDPD/main.py
 src/sparseDPD.egg-info/PKG-INFO
 src/sparseDPD.egg-info/SOURCES.txt
 src/sparseDPD.egg-info/dependency_links.txt

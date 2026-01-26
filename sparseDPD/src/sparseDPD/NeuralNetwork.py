@@ -13,6 +13,8 @@ import copy
 
 class NeuralNetwork:
     def __init__(self, num_memory_levels, model_type='PNTDNN', forward_model=False):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using {device} device")
         self.num_memory_levels = num_memory_levels
         self.nn_model = self.get_model(model_type)
         self.forward_model = forward_model  # True if forward model, False if inverse model
