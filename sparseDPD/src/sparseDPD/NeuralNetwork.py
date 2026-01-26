@@ -22,10 +22,18 @@ class NeuralNetwork:
 
     def get_model(self, model_type='PNTDNN'):
         """Return NN model instance"""
-        input_size = self.num_memory_levels * 4  # Real and Imaginary parts + A and A^3 features
+        input_size = self.num_memory_levels * 5  # Real and Imaginary parts + A and A^3 features
         if model_type == 'PNTDNN':
             hidden_size = 15
             model = PNTDNN(input_size=input_size, hidden_size=hidden_size)
+
+        elif model_type == 'PNTDNN_3_layers':
+            hidden_size1 = 30
+            hidden_size2 = 15
+            model = PNTDNN_3_layers(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
+        elif model_type == 'PNTDNN_Deep':
+            hidden_sizes = [64, 32, 32, 32, 32, 16, 8]
+            model = PNTDNN_Deep(input_size=input_size, hidden_sizes=hidden_sizes)
         else:
             print("Model type not recognized")
             model = None
@@ -55,8 +63,9 @@ class NeuralNetwork:
         phase_norm_data = phase_norm_data[self.num_memory_levels:, :]
         A_feats = A_feats[self.num_memory_levels:, :]
         A3_feats = A_feats**3
+        A5_feats = A_feats**5
 
-        xfc = np.hstack([np.real(phase_norm_data), np.imag(phase_norm_data), A_feats, A3_feats]).astype(np.float32)
+        xfc = np.hstack([np.real(phase_norm_data), np.imag(phase_norm_data), A_feats, A3_feats, A5_feats]).astype(np.float32)
         return xfc
     
     def gen_output_feature(self, y):
@@ -152,7 +161,7 @@ class NeuralNetwork:
         return train_losses, valid_losses, best_epoch
     
     def generate_model_output(self, x):
-        """Generate output for given input x using trained NN model. Return both trimmed input and output"""
+        """Generate phase denormalised output for given input x using trained NN model. Return both trimmed input and output"""
         self.nn_model.eval()
         with torch.no_grad():
             xfc = self.gen_input_feature(x)
@@ -160,7 +169,20 @@ class NeuralNetwork:
             preds = self.nn_model(X).numpy()
         # Reconstruct complex output
         y_pred = preds[:, 0] + 1j * preds[:, 1]
+
+        # Phase denormalise
+        phase = Dataset.conj_phase(x)  #conj
+        y_pred = y_pred * np.conj(phase[self.num_memory_levels:])
         return y_pred
+    
+    def calculate_forward_nmse(self, dataset):
+        """Calculate NMSE for forward model on given dataset"""
+        if not self.forward_model:
+            raise ValueError("Model is not a forward model")
+        y_true = dataset.output_data[self.num_memory_levels:]
+        y_pred = self.generate_model_output(dataset.input_data)
+        nmse = 10 * np.log10(np.sum(np.abs(y_true - y_pred)**2) / np.sum(np.abs(y_true)**2))
+        return nmse
     
 class PNTDNN(nn.Module):
     def __init__(self, input_size, hidden_size):
@@ -188,3 +210,20 @@ class PNTDNN_3_layers(nn.Module):
         x = self.relu2(self.fc2(x))
         x = self.fc3(x)
         return x
+
+
+# Forward Neural Network model. It will take the same inputs, but contain many layers and neurons
+class PNTDNN_Deep(nn.Module):
+    def __init__(self, input_size, hidden_sizes):
+        super(PNTDNN_Deep, self).__init__()
+        layers = []
+        in_size = input_size
+        for hidden_size in hidden_sizes:
+            layers.append(nn.Linear(in_size, hidden_size))
+            layers.append(nn.ReLU())
+            in_size = hidden_size
+        layers.append(nn.Linear(in_size, 2))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.network(x)
