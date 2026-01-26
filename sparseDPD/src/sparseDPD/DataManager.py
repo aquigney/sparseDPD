@@ -1,7 +1,7 @@
 # Create a Dataset object for loading and processing data
 import numpy as np
 import scipy
-from Dataset import Dataset
+from .Dataset import Dataset
 
 class DataManager:
     def __init__(self, filepath, num_training_points, num_validaiton_points, num_test_points):

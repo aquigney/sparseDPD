@@ -1,9 +1,9 @@
 # Full datapath with forward and inverse models (could be either NN or volterra)
 
 
-from Volterra import Volterra
-from Dataset import Dataset
-from NeuralNetwork import NeuralNetwork
+from .Volterra import Volterra
+from .Dataset import Dataset
+from .NeuralNetwork import NeuralNetwork
 import matplotlib.pyplot as plt
 
 

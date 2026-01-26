@@ -1,5 +1,5 @@
 # Class representing full neural network
-from Dataset import Dataset
+from .Dataset import Dataset
 import numpy as np
 
 import torch
