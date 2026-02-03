@@ -86,7 +86,7 @@ class NeuralNetwork:
         return training_xfc, training_output_aligned
  
     
-    def build_dataloaders(self, x, y, batch_size=256):
+    def build_dataloaders(self, x, y, batch_size=16):
         """Build dataloaders for dataset"""
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)

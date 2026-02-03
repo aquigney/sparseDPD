@@ -23,5 +23,5 @@ class Dataset:
     @staticmethod
     def conj_phase(signal):
         """Return the conj of phase of a complex signal"""
-        A = np.abs(signal)
-        return np.conj(signal)/A
+        x = np.asarray(signal)
+        return np.exp(-1j * np.angle(x))
