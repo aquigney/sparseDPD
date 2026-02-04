@@ -66,6 +66,7 @@ class NeuralNetwork:
         A5_feats = A_feats**5
 
         xfc = np.hstack([np.real(phase_norm_data), np.imag(phase_norm_data), A_feats, A3_feats, A5_feats]).astype(np.float32)
+        print(xfc)
         return xfc
     
     def gen_output_feature(self, y):
@@ -86,12 +87,12 @@ class NeuralNetwork:
         return training_xfc, training_output_aligned
  
     
-    def build_dataloaders(self, x, y, batch_size=16):
+    def build_dataloaders(self, x, y, batch_size=32):
         """Build dataloaders for dataset"""
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)
         dataset = TensorDataset(X, Y)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         return dataloader
 
     def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3):
