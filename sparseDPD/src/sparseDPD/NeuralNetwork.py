@@ -52,6 +52,7 @@ class NeuralNetwork:
         for n in range(self.num_memory_levels, num_points):
             for m in range(self.num_memory_levels):
                 phase_norm_data[n, m] = x[n - m] * phase[n]
+                print(m)
 
         Ax = np.sqrt(I**2 + Q**2)
         A_feats = np.zeros((num_points, self.num_memory_levels))
