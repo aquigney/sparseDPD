@@ -13,16 +13,16 @@ import copy
 
 class NeuralNetwork:
     def __init__(self, num_memory_levels, model_type='PNTDNN', forward_model=False):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using {device} device")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using {self.device} device")
         self.num_memory_levels = num_memory_levels
-        self.nn_model = self.get_model(model_type)
+        self.nn_model = self.get_model(model_type).to(self.device)
         self.forward_model = forward_model  # True if forward model, False if inverse model
         
 
     def get_model(self, model_type='PNTDNN'):
         """Return NN model instance"""
-        input_size = self.num_memory_levels * 5  # Real and Imaginary parts + A and A^3 features
+        input_size = self.num_memory_levels * 5 - 2 # Real and Imaginary parts + A and A^3 features
         if model_type == 'PNTDNN':
             hidden_size = 15
             model = PNTDNN(input_size=input_size, hidden_size=hidden_size)
@@ -50,9 +50,9 @@ class NeuralNetwork:
         phase_norm_data = np.zeros((num_points, self.num_memory_levels), dtype=complex)
 
         for n in range(self.num_memory_levels, num_points):
-            for m in range(self.num_memory_levels):
+            for m in range(self.num_memory_levels): 
                 phase_norm_data[n, m] = x[n - m] * phase[n]
-                print(m)
+                
 
         Ax = np.sqrt(I**2 + Q**2)
         A_feats = np.zeros((num_points, self.num_memory_levels))
@@ -66,7 +66,17 @@ class NeuralNetwork:
         A3_feats = A_feats**3
         A5_feats = A_feats**5
 
-        xfc = np.hstack([np.real(phase_norm_data), np.imag(phase_norm_data), A_feats, A3_feats, A5_feats]).astype(np.float32)
+        imag_pn = np.imag(phase_norm_data)[:, 1:]   # drop imag of current tap (m=0)
+        A_taps  = A_feats[:, 1:]                   # drop A of current tap (m=0), keep tapped A only
+
+        xfc = np.hstack([
+            np.real(phase_norm_data),   # M
+            imag_pn,                    # M-1
+            A_taps,                     # M-1   <-- changed
+            A3_feats,                   # M
+            A5_feats                    # M
+        ]).astype(np.float32)
+
         print(xfc)
         return xfc
     
@@ -93,7 +103,7 @@ class NeuralNetwork:
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)
         dataset = TensorDataset(X, Y)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         return dataloader
 
     def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3):
@@ -122,6 +132,8 @@ class NeuralNetwork:
             running_valid_loss = 0
             
             for xb, yb in train_loader:
+                xb = xb.to(self.device)
+                yb = yb.to(self.device)
                 optimizer.zero_grad()
                 preds = self.nn_model(xb)
                 loss = criterion(preds, yb)
@@ -134,6 +146,8 @@ class NeuralNetwork:
             self.nn_model.eval()
             with torch.no_grad():
                 for xb, yb in valid_loader:
+                    xb = xb.to(self.device)
+                    yb = yb.to(self.device)
                     preds = self.nn_model(xb)
                     loss = criterion(preds, yb)
                     running_valid_loss += loss.item() * xb.size(0)
@@ -167,8 +181,8 @@ class NeuralNetwork:
         self.nn_model.eval()
         with torch.no_grad():
             xfc = self.gen_input_feature(x)
-            X = torch.tensor(xfc, dtype=torch.float32)
-            preds = self.nn_model(X).numpy()
+            X = torch.tensor(xfc, dtype=torch.float32).to(self.device)
+            preds = self.nn_model(X).detach().cpu().numpy()
         # Reconstruct complex output
         y_pred = preds[:, 0] + 1j * preds[:, 1]
 
