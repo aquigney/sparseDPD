@@ -1,4 +1,5 @@
 from .Experiment import Experiment
+from .NeuralNetwork import PNTDNN
 
 class LinearExperiment(Experiment):
     def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset):
@@ -21,7 +22,10 @@ class LinearExperiment(Experiment):
             
             # Apply pruning to the current model (iterative pruning of remaining weights)
             print(f"Pruning {self.prune_amount*100:.1f}% of remaining weights...")
-            self.nn_model_copy.prune_model(["fc1", "fc2"], self.prune_amount)
+            if isinstance(self.nn_model_copy.nn_model, PNTDNN):
+                self.nn_model_copy.prune_model(["fc1", "fc2"], self.prune_amount)
+            else:
+                TypeError("Unknown Model Prune Type")
             
             # Calculate current pruning percentage
             current_prune_pct = self.nn_model_copy._get_pruning_percentage()

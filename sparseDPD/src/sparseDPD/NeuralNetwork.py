@@ -8,6 +8,7 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader, random_split
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.utils import prune
+import matplotlib.pyplot as plt
 
 import copy
 
@@ -97,7 +98,7 @@ class NeuralNetwork:
         return training_xfc, training_output_aligned
  
     
-    def build_dataloaders(self, x, y, batch_size=32):
+    def build_dataloaders(self, x, y, batch_size=256):
         """Build dataloaders for dataset"""
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)
@@ -248,6 +249,62 @@ class NeuralNetwork:
                     total_params += module.weight.numel()
         
         return (pruned_params / total_params * 100) if total_params > 0 else 0
+    
+    @staticmethod
+    def plot_valid_curve(valid_losses, best_epoch=None):
+        """
+        Plot validation loss curve
+        """
+
+        epochs = np.arange(1, len(valid_losses) + 1)
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+        # Plot validation curve
+        ax.plot(
+            epochs,
+            valid_losses,
+            linewidth=2,
+            color='tab:blue',
+            label='Validation Loss'
+        )
+
+        # Best epoch marker
+        if best_epoch is not None:
+            best_loss = valid_losses[best_epoch - 1]
+
+            ax.axvline(
+                x=best_epoch,
+                linestyle='--',
+                linewidth=1.5,
+                color='tab:red',
+                alpha=0.8,
+                label=f'Best Epoch = {best_epoch}'
+            )
+
+            ax.plot(
+                best_epoch,
+                best_loss,
+                marker='*',
+                markersize=14,
+                color='tab:red',
+                markeredgecolor='black',
+                markeredgewidth=1.2
+            )
+
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Validation Loss', fontsize=12)
+        ax.set_title(
+            'Validation Loss vs Epoch',
+            fontsize=14,
+            fontweight='bold'
+        )
+
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=10)
+
+        plt.tight_layout()
+        plt.show()
     
 class PNTDNN(nn.Module):
     def __init__(self, input_size, hidden_size):
