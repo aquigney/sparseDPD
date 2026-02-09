@@ -6,6 +6,8 @@ from .DataManager import DataManager
 from .NeuralNetwork import NeuralNetwork, PNTDNN, PNTDNN_3_layers
 from .Volterra import Volterra
 from .DeltaGRU import DeltaGRUNetwork
+from .LinearExperiment import LinearExperiment
+from .Experiment import Experiment
 
 # etc...
 

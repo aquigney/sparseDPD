@@ -77,12 +77,11 @@ class NeuralNetwork:
             A5_feats                    # M
         ]).astype(np.float32)
 
-        print(xfc)
         return xfc
     
-    def gen_output_feature(self, y):
+    def gen_output_feature(self, x, y):
         """Generates features from output signal for NN model"""
-        y_norm = y * Dataset.conj_phase(y) # Normalised Output data TODO check if this breaks
+        y_norm = y * Dataset.conj_phase(x) # Normalised Output data TODO check if this breaks
         y_norm = y_norm[self.num_memory_levels:]
         return np.array([np.real(y_norm), np.imag(y_norm)]).T.astype(np.float32)
     
@@ -93,7 +92,7 @@ class NeuralNetwork:
         else:
             model_training_output, model_training_input = dataset.input_data, dataset.output_data
         training_xfc = self.gen_input_feature(model_training_input)
-        training_output_aligned = self.gen_output_feature(model_training_output) 
+        training_output_aligned = self.gen_output_feature(model_training_input, model_training_output) 
 
         return training_xfc, training_output_aligned
  
@@ -199,6 +198,56 @@ class NeuralNetwork:
         y_pred = self.generate_model_output(dataset.input_data)
         nmse = 10 * np.log10(np.sum(np.abs(y_true - y_pred)**2) / np.sum(np.abs(y_true)**2))
         return nmse
+    
+    
+    def prune_model(self, parameters_to_prune_list, prune_amount=0.2):
+        """Apply pruning to the model in-place"""
+        parameters_to_prune = []
+
+        if "fc1" in parameters_to_prune_list:
+            parameters_to_prune.append((self.nn_model.fc1, 'weight'))
+        if "fc2" in parameters_to_prune_list:
+            parameters_to_prune.append((self.nn_model.fc2, 'weight'))
+        if "fc3" in parameters_to_prune_list:
+            parameters_to_prune.append((self.nn_model.fc3, 'weight'))
+        
+        prune.global_unstructured(
+            parameters_to_prune,
+            pruning_method=prune.L1Unstructured,
+            amount=prune_amount,
+        )
+
+    def _calculate_initial_valid_loss(self, validation_dataset):
+        # Calculate initial validation loss (for pruning experiments)
+        validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
+
+        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned)
+        criterion = nn.MSELoss()
+        self.nn_model.eval()
+        with torch.no_grad():
+            initial_valid_loss = 0
+            for xb, yb in valid_loader:
+                xb = xb.to(self.device)
+                yb = yb.to(self.device)
+                preds = self.nn_model(xb)
+                loss = criterion(preds, yb)
+                initial_valid_loss += loss.item() * xb.size(0)
+        return initial_valid_loss
+
+    def _get_pruning_percentage(self):
+        """Calculate the current percentage of pruned weights"""
+        total_params = 0
+        pruned_params = 0
+        for name, module in self.nn_model.named_modules():
+            if isinstance(module, nn.Linear):
+                if hasattr(module, 'weight_mask'):
+                    mask = module.weight_mask
+                    total_params += mask.numel()
+                    pruned_params += (mask == 0).sum().item()
+                else:
+                    total_params += module.weight.numel()
+        
+        return (pruned_params / total_params * 100) if total_params > 0 else 0
     
 class PNTDNN(nn.Module):
     def __init__(self, input_size, hidden_size):
