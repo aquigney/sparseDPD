@@ -19,7 +19,7 @@ class Dataset:
         power_error = np.mean(np.abs(self.input_data - self.output_data)**2)
         nmse = 10 * np.log10(power_error / power_input)
         return nmse
-    
+
     @staticmethod
     def conj_phase(signal):
         """Return the conj of phase of a complex signal"""

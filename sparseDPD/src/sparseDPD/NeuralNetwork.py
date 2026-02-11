@@ -106,11 +106,11 @@ class NeuralNetwork:
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         return dataloader
 
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3):
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False):
         """Train model and return the best model based on validation loss"""
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6, min_lr=1e-6)
         
         train_losses = []
         valid_losses = []
@@ -119,12 +119,32 @@ class NeuralNetwork:
         best_epoch = 0
 
         # Create dataloaders
-        training_xfc, training_output_aligned = self.training_data(training_dataset)
+        if not use_frames:
+            training_xfc, training_output_aligned = self.training_data(training_dataset)
 
-        validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
+            validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
 
-        train_loader = self.build_dataloaders(training_xfc, training_output_aligned)
-        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned)
+            train_loader = self.build_dataloaders(training_xfc, training_output_aligned)
+            valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned)
+        else: 
+            train_ds = IQFrameTDNNSampleDataset(
+                training_dataset.input_data,
+                training_dataset.output_data,
+                frame_length=500,
+                stride=1,
+                mem_depth=self.num_memory_levels
+            )
+
+            valid_ds = IQFrameTDNNSampleDataset(
+                validation_dataset.input_data,
+                validation_dataset.output_data,
+                frame_length=500,
+                stride=1,
+                mem_depth=self.num_memory_levels
+            )
+
+            train_loader = DataLoader(train_ds, batch_size=256, shuffle=True)
+            valid_loader = DataLoader(valid_ds, batch_size=256, shuffle=False)
         
         for epoch in range(num_epochs):
             self.nn_model.train()
@@ -349,3 +369,87 @@ class PNTDNN_Deep(nn.Module):
 
     def forward(self, x):
         return self.network(x)
+    
+
+class IQFrameTDNNSampleDataset(Dataset):
+    """
+    Training-only dataset:
+    - frames x and y into aligned [Nf, T]
+    - produces samples for every valid t within each frame:
+        t = (M-1) .. (T-1)
+    - each item returns:
+        xfc: [5M-2] float32
+        y :  [2]    float32  (phase-normalized output)
+    """
+
+    def __init__(self, x, y, frame_length=500, stride=1, mem_depth=10):
+        self.x = np.asarray(x)
+        self.y = np.asarray(y)
+        self.T = int(frame_length)
+        self.S = int(stride)
+        self.M = int(mem_depth)
+
+        if self.T < self.M:
+            raise ValueError(f"frame_length (T={self.T}) must be >= mem_depth (M={self.M})")
+
+        # Build aligned frames (same indexing for x and y)
+        self.x_frames = self._get_frames(self.x, self.T, self.S)  # [Nf, T]
+        self.y_frames = self._get_frames(self.y, self.T, self.S)  # [Nf, T]
+        self.n_frames = self.x_frames.shape[0]
+
+        # valid t positions inside each frame
+        self.valid_t0 = self.M - 1
+        self.n_valid_per_frame = self.T - self.valid_t0
+        self.total = self.n_frames * self.n_valid_per_frame
+
+    @staticmethod
+    def _get_frames(sequence, frame_length, stride):
+        n = len(sequence)
+        n_frames = (n - frame_length) // stride + 1
+        return np.stack([sequence[i*stride:i*stride+frame_length] for i in range(n_frames)])
+
+    @staticmethod
+    def conj_phase(signal):
+        x = np.asarray(signal)
+        return np.exp(-1j * np.angle(x))
+
+    def __len__(self):
+        return self.total
+
+    def __getitem__(self, idx):
+        # Map flat idx -> (frame k, time index within valid region)
+        k = idx // self.n_valid_per_frame
+        j = idx % self.n_valid_per_frame
+        t = self.valid_t0 + j  # absolute index within frame
+
+        x_frame = self.x_frames[k]
+        y_frame = self.y_frames[k]
+
+        # taps: [x[t], x[t-1], ..., x[t-(M-1)]]
+        taps = x_frame[t - (self.M - 1): t + 1][::-1]
+
+        x_curr = taps[0]
+        c = self.conj_phase(x_curr)          # scalar complex
+
+        pn = taps * c                        # [M] complex phase-normalized taps
+        A = np.abs(taps)                     # [M]
+        A3 = A ** 3
+        A5 = A ** 5
+
+        # Drop imag(current PN tap) and drop A(current tap)
+        imag_pn = np.imag(pn)[1:]            # [M-1]
+        A_taps  = A[1:]                      # [M-1]
+
+        xfc = np.hstack([
+            np.real(pn),                     # [M]
+            imag_pn,                         # [M-1]
+            A_taps,                          # [M-1]
+            A3,                              # [M]
+            A5                               # [M]
+        ]).astype(np.float32)                # => [5M-2]
+
+        # Target at the same time index t, normalized by phase of x[t]
+        y_norm = y_frame[t] * c              # scalar complex
+        y_out = np.array([y_norm.real, y_norm.imag], dtype=np.float32)
+
+        return torch.from_numpy(xfc), torch.from_numpy(y_out)
