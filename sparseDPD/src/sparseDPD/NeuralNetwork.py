@@ -24,7 +24,7 @@ class NeuralNetwork:
         """Return NN model instance"""
         input_size = self.num_memory_levels * 5 - 2 # Real and Imaginary parts + A and A^3 features
         if model_type == 'PNTDNN':
-            hidden_size = 15
+            hidden_size = 12
             model = PNTDNN(input_size=input_size, hidden_size=hidden_size)
 
         elif model_type == 'PNTDNN_3_layers':
@@ -41,7 +41,6 @@ class NeuralNetwork:
 
     def gen_input_feature(self, x):
         """Generates features from input signal for NN model"""
-
         num_points = len(x)
         phase = Dataset.conj_phase(x) #conj
         I = np.real(x)
@@ -81,7 +80,7 @@ class NeuralNetwork:
     
     def gen_output_feature(self, x, y):
         """Generates features from output signal for NN model"""
-        y_norm = y * Dataset.conj_phase(x) # Normalised Output data TODO check if this breaks
+        y_norm = y * Dataset.conj_phase(x) 
         y_norm = y_norm[self.num_memory_levels:]
         return np.array([np.real(y_norm), np.imag(y_norm)]).T.astype(np.float32)
     
@@ -260,6 +259,18 @@ class NeuralNetwork:
                     total_params += module.weight.numel()
         
         return (pruned_params / total_params * 100) if total_params > 0 else 0
+    
+    def get_num_params(self):
+        total_params = 0
+        for name, module in self.nn_model.named_modules():
+            if isinstance(module, nn.Linear):
+                if hasattr(module, 'weight_mask'):
+                    mask = module.weight_mask
+                    total_params += mask.numel()
+                else:
+                    total_params += module.weight.numel()
+        
+        return total_params
     
     @staticmethod
     def plot_valid_curve(valid_losses, best_epoch=None):
