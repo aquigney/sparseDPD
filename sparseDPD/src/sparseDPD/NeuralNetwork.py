@@ -41,39 +41,50 @@ class NeuralNetwork:
 
     def gen_input_feature(self, x):
         """Generates features from input signal for NN model"""
-        num_points = len(x)
-        phase = Dataset.conj_phase(x) #conj
-        I = np.real(x)
-        Q = np.imag(x)
+        x = np.asarray(x)
+        N = x.shape[0]
+        M = int(self.num_memory_levels)
+        if N < M:
+            # no valid samples
+            return np.empty((0, 5 * M - 2), dtype=np.float32)
 
-        phase_norm_data = np.zeros((num_points, self.num_memory_levels), dtype=complex)
+        # sliding windows of length M: windows[i] = [x[i], ..., x[i+M-1]]
+        try:
+            from numpy.lib.stride_tricks import sliding_window_view
+            windows = sliding_window_view(x, window_shape=M)
+        except Exception:
+            # Fallback: construct with a simple stack (less efficient)
+            windows = np.stack([x[i:N - M + i + 1] for i in range(M)], axis=1)
 
-        for n in range(self.num_memory_levels, num_points):
-            for m in range(self.num_memory_levels): 
-                phase_norm_data[n, m] = x[n - m] * phase[n]
-                
+        # Original behavior aligned features with outputs starting at index self.num_memory_levels
+        # windows shape is (N-M+1, M) corresponding to end indices (M-1 .. N-1).
+        # To match previous code (which started at n = M .. N-1) we skip the first window.
+        windows = windows[1:]
 
-        Ax = np.sqrt(I**2 + Q**2)
-        A_feats = np.zeros((num_points, self.num_memory_levels))
-        for n in range(self.num_memory_levels, num_points):
-            for m in range(self.num_memory_levels):
-                A_feats[n, m] = Ax[n - m]
+        # Each row corresponds to time index n = M .. (N-1); taps ordered current..past
+        taps = windows[:, ::-1]
 
-        # Trim first num_memory_levels rows
-        phase_norm_data = phase_norm_data[self.num_memory_levels:, :]
-        A_feats = A_feats[self.num_memory_levels:, :]
-        A3_feats = A_feats**3
-        A5_feats = A_feats**5
+        # phase at each output time = conj_phase(x)[M:]
+        phase = Dataset.conj_phase(x)[M:]
 
-        imag_pn = np.imag(phase_norm_data)[:, 1:]   # drop imag of current tap (m=0)
-        A_taps  = A_feats[:, 1:]                   # drop A of current tap (m=0), keep tapped A only
+        # apply phase normalization per-row
+        pn = taps * phase[:, None]
+
+        A = np.abs(taps)
+        A3 = A ** 3
+        A5 = A ** 5
+
+        # Build features following previous layout
+        real_pn = np.real(pn)               # (N-M+1, M)
+        imag_pn = np.imag(pn)[:, 1:]        # (N-M+1, M-1)
+        A_taps = A[:, 1:]                   # (N-M+1, M-1)
 
         xfc = np.hstack([
-            np.real(phase_norm_data),   # M
-            imag_pn,                    # M-1
-            A_taps,                     # M-1   <-- changed
-            A3_feats,                   # M
-            A5_feats                    # M
+            real_pn,
+            imag_pn,
+            A_taps,
+            A3,
+            A5
         ]).astype(np.float32)
 
         return xfc
@@ -96,16 +107,20 @@ class NeuralNetwork:
         return training_xfc, training_output_aligned
  
     
-    def build_dataloaders(self, x, y, batch_size=256):
+    def build_dataloaders(self, x, y, batch_size=256, shuffle=False):
         """Build dataloaders for dataset"""
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)
         dataset = TensorDataset(X, Y)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
         return dataloader
 
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500):
-        """Train model and return the best model based on validation loss"""
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500, grad_clip_val=0.0):
+        """Train model and return the best model based on validation loss.
+
+        Args:
+            grad_clip_val (float): max norm for gradient clipping; 0.0 disables clipping.
+        """
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6, min_lr=1e-6)
@@ -117,12 +132,12 @@ class NeuralNetwork:
         best_epoch = 0
 
         validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
-        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned)
+        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned, shuffle=False)
 
         # Create dataloaders
         if not use_frames:
             training_xfc, training_output_aligned = self.training_data(training_dataset)
-            train_loader = self.build_dataloaders(training_xfc, training_output_aligned)
+            train_loader = self.build_dataloaders(training_xfc, training_output_aligned, shuffle=True)
             
         else: 
             train_ds = IQFrameTDNNSampleDataset(
@@ -148,10 +163,18 @@ class NeuralNetwork:
                 preds = self.nn_model(xb)
                 loss = criterion(preds, yb)
                 loss.backward()
+                # Optional gradient clipping
+                if grad_clip_val and grad_clip_val > 0.0:
+                    nn.utils.clip_grad_norm_(self.nn_model.parameters(), grad_clip_val)
                 optimizer.step()
                 running_train_loss += loss.item() * xb.size(0)
-                
-            train_loss = running_train_loss
+
+            # Average epoch training loss
+            try:
+                n_train_samples = len(train_loader.dataset)
+                train_loss = running_train_loss / float(n_train_samples)
+            except Exception:
+                train_loss = running_train_loss
             
             self.nn_model.eval()
             with torch.no_grad():
@@ -161,8 +184,13 @@ class NeuralNetwork:
                     preds = self.nn_model(xb)
                     loss = criterion(preds, yb)
                     running_valid_loss += loss.item() * xb.size(0)
-                
-            valid_loss = running_valid_loss
+
+            # Average validation loss
+            try:
+                n_valid_samples = len(valid_loader.dataset)
+                valid_loss = running_valid_loss / float(n_valid_samples)
+            except Exception:
+                valid_loss = running_valid_loss
             
             train_losses.append(train_loss)
             valid_losses.append(valid_loss)
@@ -232,7 +260,7 @@ class NeuralNetwork:
         # Calculate initial validation loss (for pruning experiments)
         validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
 
-        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned)
+        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned, shuffle=False)
         criterion = nn.MSELoss()
         self.nn_model.eval()
         with torch.no_grad():
@@ -403,39 +431,48 @@ class IQFrameTDNNSampleDataset(torch.utils.data.Dataset):
 
         feat_dim = 5 * self.M - 2
 
-        # Preallocate arrays (this is the key speedup)
-        Xfc = np.empty((total, feat_dim), dtype=np.float32)
+        if total == 0:
+            # No samples
+            self.X = torch.empty((0, feat_dim), dtype=torch.float32)
+            self.Y = torch.empty((0, 2), dtype=torch.float32)
+            return
+
+        # Vectorized extraction: build sliding windows over axis=1
+        try:
+            from numpy.lib.stride_tricks import sliding_window_view
+            windows = sliding_window_view(x_frames, window_shape=self.M, axis=1)
+        except Exception:
+            # Fallback: slower stack
+            windows = np.stack([x_frames[:, i:i + n_valid] for i in range(self.M)], axis=2)
+
+        # windows shape: (n_frames, n_valid, M) where windows[:, j, :] = [x[i],...,x[i+M-1]]
+        taps = windows[:, :, ::-1]  # order current..past -> shape (n_frames, n_valid, M)
+
+        # complex scalar per-sample to conjugate phase of current tap
+        c = np.exp(-1j * np.angle(taps[:, :, 0]))  # (n_frames, n_valid)
+
+        pn = taps * c[:, :, None]
+        A = np.abs(taps)
+        A3 = A ** 3
+        A5 = A ** 5
+
+        # Stack features and reshape to (total, feat_dim)
+        real_pn = np.real(pn).reshape(total, self.M)
+        imag_pn = np.imag(pn)[:, :, 1:].reshape(total, self.M - 1)
+        A_taps = A[:, :, 1:].reshape(total, self.M - 1)
+        A3_r = A3.reshape(total, self.M)
+        A5_r = A5.reshape(total, self.M)
+
+        Xfc = np.hstack([real_pn, imag_pn, A_taps, A3_r, A5_r]).astype(np.float32)
+
+        # y current values aligned with windows: pick y_frames[:, M-1:]
+        y_curr = y_frames[:, valid_t0:].reshape(total)
+        c_flat = c.reshape(total)
+        y_norm = y_curr * c_flat
+
         Yout = np.empty((total, 2), dtype=np.float32)
-
-        row = 0
-        for k in range(n_frames):
-            xf = x_frames[k]
-            yf = y_frames[k]
-
-            for t in range(valid_t0, self.T):
-                taps = xf[t - (self.M - 1): t + 1][::-1]  # [M], order current..past
-
-                x_curr = taps[0]
-                c = np.exp(-1j * np.angle(x_curr))        # scalar complex
-
-                pn = taps * c
-                A = np.abs(taps)
-                A3 = A ** 3
-                A5 = A ** 5
-
-                Xfc[row, :] = np.hstack([
-                    np.real(pn),          # M
-                    np.imag(pn)[1:],      # M-1
-                    A[1:],                # M-1
-                    A3,                   # M
-                    A5                    # M
-                ]).astype(np.float32)
-
-                y_norm = yf[t] * c
-                Yout[row, 0] = np.float32(np.real(y_norm))
-                Yout[row, 1] = np.float32(np.imag(y_norm))
-
-                row += 1
+        Yout[:, 0] = np.real(y_norm).astype(np.float32)
+        Yout[:, 1] = np.imag(y_norm).astype(np.float32)
 
         # Convert ONCE to torch tensors (CPU)
         self.X = torch.from_numpy(Xfc)
