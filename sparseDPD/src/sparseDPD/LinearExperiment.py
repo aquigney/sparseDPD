@@ -2,7 +2,7 @@ from .Experiment import Experiment
 from .NeuralNetwork import PNTDNN
 
 class LinearExperiment(Experiment):
-    def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset, use_frames=True, frame_stride=10, frame_length=500):
+    def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset, use_frames=True, frame_stride=100, frame_length=500):
         super().__init__(nn_model, training_dataset, valid_dataset, test_dataset)
         self.num_prune_iterations = num_prune_iterations
         self.prune_amount = prune_amount
