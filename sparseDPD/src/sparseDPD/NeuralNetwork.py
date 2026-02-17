@@ -13,19 +13,19 @@ import matplotlib.pyplot as plt
 import copy
 
 class NeuralNetwork:
-    def __init__(self, num_memory_levels, model_type='PNTDNN', forward_model=False):
+    def __init__(self, num_memory_levels, model_type='OneLayerNetwork', forward_model=False):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using {self.device} device")
         self.num_memory_levels = num_memory_levels
         self.nn_model = self.get_model(model_type).to(self.device)
         self.forward_model = forward_model  # True if forward model, False if inverse model
 
-    def get_model(self, model_type='PNTDNN'):
+    def get_model(self, model_type='OneLayerNetwork'):
         """Return NN model instance"""
         input_size = self.num_memory_levels * 5 - 2 # Real and Imaginary parts + A and A^3 features
-        if model_type == 'PNTDNN':
+        if model_type == 'OneLayerNetwork':
             hidden_size = 12
-            model = PNTDNN(input_size=input_size, hidden_size=hidden_size)
+            model = OneLayerNetwork(input_size=input_size, hidden_size=hidden_size)
 
         elif model_type == 'PNTDNN_3_layers':
             hidden_size1 = 30
@@ -38,62 +38,6 @@ class NeuralNetwork:
             print("Model type not recognized")
             model = None
         return model
-
-    def gen_input_feature(self, x):
-        """Generates features from input signal for NN model"""
-        x = np.asarray(x)
-        N = x.shape[0]
-        M = int(self.num_memory_levels)
-        if N < M:
-            # no valid samples
-            return np.empty((0, 5 * M - 2), dtype=np.float32)
-
-        # sliding windows of length M: windows[i] = [x[i], ..., x[i+M-1]]
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            windows = sliding_window_view(x, window_shape=M)
-        except Exception:
-            # Fallback: construct with a simple stack (less efficient)
-            windows = np.stack([x[i:N - M + i + 1] for i in range(M)], axis=1)
-
-        # Original behavior aligned features with outputs starting at index self.num_memory_levels
-        # windows shape is (N-M+1, M) corresponding to end indices (M-1 .. N-1).
-        # To match previous code (which started at n = M .. N-1) we skip the first window.
-        windows = windows[1:]
-
-        # Each row corresponds to time index n = M .. (N-1); taps ordered current..past
-        taps = windows[:, ::-1]
-
-        # phase at each output time = conj_phase(x)[M:]
-        phase = Dataset.conj_phase(x)[M:]
-
-        # apply phase normalization per-row
-        pn = taps * phase[:, None]
-
-        A = np.abs(taps)
-        A3 = A ** 3
-        A5 = A ** 5
-
-        # Build features following previous layout
-        real_pn = np.real(pn)               # (N-M+1, M)
-        imag_pn = np.imag(pn)[:, 1:]        # (N-M+1, M-1)
-        A_taps = A[:, 1:]                   # (N-M+1, M-1)
-
-        xfc = np.hstack([
-            real_pn,
-            imag_pn,
-            A_taps,
-            A3,
-            A5
-        ]).astype(np.float32)
-
-        return xfc
-    
-    def gen_output_feature(self, x, y):
-        """Generates features from output signal for NN model"""
-        y_norm = y * Dataset.conj_phase(x) 
-        y_norm = y_norm[self.num_memory_levels:]
-        return np.array([np.real(y_norm), np.imag(y_norm)]).T.astype(np.float32)
     
     def training_data(self, dataset):
         """Get aligned training data for NN model"""
@@ -140,14 +84,10 @@ class NeuralNetwork:
             train_loader = self.build_dataloaders(training_xfc, training_output_aligned, shuffle=True)
             
         else: 
-            train_ds = IQFrameTDNNSampleDataset(
-                training_dataset.input_data,
-                training_dataset.output_data,
-                frame_length=frame_length,
-                stride=frame_stride,
-                mem_depth=self.num_memory_levels
-            )
-
+            x_frames = self._get_frames(training_dataset.input_data, frame_length, frame_stride)
+            y_frames = self._get_frames(training_dataset.output_data, frame_length, frame_stride)
+            X, Y = self._precompute_iq_features(x_frames, y_frames)
+            train_ds = TensorDataset(X, Y)
             train_loader = DataLoader(train_ds, batch_size=256, shuffle=True, pin_memory=True)
         
         self.nn_model.to(self.device)
@@ -355,10 +295,134 @@ class NeuralNetwork:
 
         plt.tight_layout()
         plt.show()
+
+
+class PNTDNN_NeuralNetwork(NeuralNetwork):
+    # This class is a wrapper around the base NeuralNetwork to specify the PNTDNN architecture and feature generation 
+    def __init__(self):
+        super(PNTDNN_NeuralNetwork, self).__init__()
     
-class PNTDNN(nn.Module):
+
+    def gen_input_feature(self, x):
+        """Generates features from input signal for NN model"""
+        x = np.asarray(x)
+        N = x.shape[0]
+        M = int(self.num_memory_levels)
+        if N < M:
+            # no valid samples
+            return np.empty((0, 5 * M - 2), dtype=np.float32)
+
+        # sliding windows of length M: windows[i] = [x[i], ..., x[i+M-1]]
+        try:
+            from numpy.lib.stride_tricks import sliding_window_view
+            windows = sliding_window_view(x, window_shape=M)
+        except Exception:
+            # Fallback: construct with a simple stack (less efficient)
+            windows = np.stack([x[i:N - M + i + 1] for i in range(M)], axis=1)
+
+        # Original behavior aligned features with outputs starting at index self.num_memory_levels
+        # windows shape is (N-M+1, M) corresponding to end indices (M-1 .. N-1).
+        # To match previous code (which started at n = M .. N-1) we skip the first window.
+        windows = windows[1:]
+
+        # Each row corresponds to time index n = M .. (N-1); taps ordered current..past
+        taps = windows[:, ::-1]
+
+        # phase at each output time = conj_phase(x)[M:]
+        phase = Dataset.conj_phase(x)[M:]
+
+        # apply phase normalization per-row
+        pn = taps * phase[:, None]
+
+        A = np.abs(taps)
+        A3 = A ** 3
+        A5 = A ** 5
+
+        # Build features following previous layout
+        real_pn = np.real(pn)               # (N-M+1, M)
+        imag_pn = np.imag(pn)[:, 1:]        # (N-M+1, M-1)
+        A_taps = A[:, 1:]                   # (N-M+1, M-1)
+
+        xfc = np.hstack([
+            real_pn,
+            imag_pn,
+            A_taps,
+            A3,
+            A5
+        ]).astype(np.float32)
+
+        return xfc
+    
+    def gen_output_feature(self, x, y):
+        """Generates features from output signal for NN model"""
+        y_norm = y * Dataset.conj_phase(x) 
+        y_norm = y_norm[self.num_memory_levels:]
+        return np.array([np.real(y_norm), np.imag(y_norm)]).T.astype(np.float32)
+    
+    @staticmethod
+    def _get_frames(sequence, frame_length, stride):
+        """Extract frames from sequence"""
+        n = len(sequence)
+        n_frames = (n - frame_length) // stride + 1
+        return np.stack([sequence[i*stride:i*stride+frame_length] for i in range(n_frames)])
+    
+    def _precompute_iq_features(self, x_frames, y_frames):
+        """Precompute IQ frame features and targets"""
+        n_frames = x_frames.shape[0]
+        valid_t0 = self.num_memory_levels - 1
+        n_valid = x_frames.shape[1] - valid_t0
+        total = n_frames * n_valid
+        feat_dim = 5 * self.num_memory_levels - 2
+
+        if total == 0:
+            return torch.empty((0, feat_dim), dtype=torch.float32), torch.empty((0, 2), dtype=torch.float32)
+
+        # Vectorized extraction: build sliding windows
+        try:
+            from numpy.lib.stride_tricks import sliding_window_view
+            windows = sliding_window_view(x_frames, window_shape=self.num_memory_levels, axis=1)
+        except Exception:
+            windows = np.stack([x_frames[:, i:i + n_valid] for i in range(self.num_memory_levels)], axis=2)
+
+        taps = windows[:, :, ::-1]
+        c = np.exp(-1j * np.angle(taps[:, :, 0]))
+
+        pn = taps * c[:, :, None]
+        A = np.abs(taps)
+        A3 = A ** 3
+        A5 = A ** 5
+
+        real_pn = np.real(pn).reshape(total, self.num_memory_levels)
+        imag_pn = np.imag(pn)[:, :, 1:].reshape(total, self.num_memory_levels - 1)
+        A_taps = A[:, :, 1:].reshape(total, self.num_memory_levels - 1)
+        A3_r = A3.reshape(total, self.num_memory_levels)
+        A5_r = A5.reshape(total, self.num_memory_levels)
+
+        Xfc = np.hstack([real_pn, imag_pn, A_taps, A3_r, A5_r]).astype(np.float32)
+
+        y_curr = y_frames[:, valid_t0:].reshape(total)
+        c_flat = c.reshape(total)
+        y_norm = y_curr * c_flat
+
+        Yout = np.empty((total, 2), dtype=np.float32)
+        Yout[:, 0] = np.real(y_norm).astype(np.float32)
+        Yout[:, 1] = np.imag(y_norm).astype(np.float32)
+
+        return torch.from_numpy(Xfc), torch.from_numpy(Yout)
+    
+
+class ARVTDNN_NeuralNetwork(NeuralNetwork):
+    """Similar to PNTDNN but with no phase normalization"""
+    def __init__(self, num_memory_levels, model_type='OneLayerNetwork', forward_model=False):
+        super().__init__(num_memory_levels, model_type, forward_model)
+
+
+
+##### PyTorch models #####
+
+class OneLayerNetwork(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(PNTDNN, self).__init__()
+        super(OneLayerNetwork, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(hidden_size, 2)
@@ -366,8 +430,6 @@ class PNTDNN(nn.Module):
     def forward(self, x):
         return self.fc2(self.relu(self.fc1(x)))
     
-
-
 class PNTDNN_3_layers(nn.Module):    
     def __init__(self, input_size, hidden_size1, hidden_size2):
         super(PNTDNN_3_layers, self).__init__()
@@ -399,93 +461,3 @@ class PNTDNN_Deep(nn.Module):
 
     def forward(self, x):
         return self.network(x)
-    
-
-class IQFrameTDNNSampleDataset(torch.utils.data.Dataset):
-    """
-    Precomputed training dataset:
-    - frames x and y into aligned [Nf, T]
-    - generates samples for every valid t within each frame: t = (M-1) .. (T-1)
-    - MATERIALIZES xfc and y_out ONCE in __init__
-    - __getitem__ becomes cheap tensor indexing
-    """
-
-    def __init__(self, x, y, frame_length=500, stride=1, mem_depth=10):
-        self.x = np.asarray(x)
-        self.y = np.asarray(y)
-        self.T = int(frame_length)
-        self.S = int(stride)
-        self.M = int(mem_depth)
-
-        if self.T < self.M:
-            raise ValueError(f"frame_length (T={self.T}) must be >= mem_depth (M={self.M})")
-
-        # Build aligned frames (same indexing for x and y)
-        x_frames = self._get_frames(self.x, self.T, self.S)  # [Nf, T]
-        y_frames = self._get_frames(self.y, self.T, self.S)  # [Nf, T]
-        n_frames = x_frames.shape[0]
-
-        valid_t0 = self.M - 1
-        n_valid = self.T - valid_t0
-        total = n_frames * n_valid
-
-        feat_dim = 5 * self.M - 2
-
-        if total == 0:
-            # No samples
-            self.X = torch.empty((0, feat_dim), dtype=torch.float32)
-            self.Y = torch.empty((0, 2), dtype=torch.float32)
-            return
-
-        # Vectorized extraction: build sliding windows over axis=1
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            windows = sliding_window_view(x_frames, window_shape=self.M, axis=1)
-        except Exception:
-            # Fallback: slower stack
-            windows = np.stack([x_frames[:, i:i + n_valid] for i in range(self.M)], axis=2)
-
-        # windows shape: (n_frames, n_valid, M) where windows[:, j, :] = [x[i],...,x[i+M-1]]
-        taps = windows[:, :, ::-1]  # order current..past -> shape (n_frames, n_valid, M)
-
-        # complex scalar per-sample to conjugate phase of current tap
-        c = np.exp(-1j * np.angle(taps[:, :, 0]))  # (n_frames, n_valid)
-
-        pn = taps * c[:, :, None]
-        A = np.abs(taps)
-        A3 = A ** 3
-        A5 = A ** 5
-
-        # Stack features and reshape to (total, feat_dim)
-        real_pn = np.real(pn).reshape(total, self.M)
-        imag_pn = np.imag(pn)[:, :, 1:].reshape(total, self.M - 1)
-        A_taps = A[:, :, 1:].reshape(total, self.M - 1)
-        A3_r = A3.reshape(total, self.M)
-        A5_r = A5.reshape(total, self.M)
-
-        Xfc = np.hstack([real_pn, imag_pn, A_taps, A3_r, A5_r]).astype(np.float32)
-
-        # y current values aligned with windows: pick y_frames[:, M-1:]
-        y_curr = y_frames[:, valid_t0:].reshape(total)
-        c_flat = c.reshape(total)
-        y_norm = y_curr * c_flat
-
-        Yout = np.empty((total, 2), dtype=np.float32)
-        Yout[:, 0] = np.real(y_norm).astype(np.float32)
-        Yout[:, 1] = np.imag(y_norm).astype(np.float32)
-
-        # Convert ONCE to torch tensors (CPU)
-        self.X = torch.from_numpy(Xfc)
-        self.Y = torch.from_numpy(Yout)
-
-    @staticmethod
-    def _get_frames(sequence, frame_length, stride):
-        n = len(sequence)
-        n_frames = (n - frame_length) // stride + 1
-        return np.stack([sequence[i*stride:i*stride+frame_length] for i in range(n_frames)])
-
-    def __len__(self):
-        return self.X.shape[0]
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.Y[idx]
