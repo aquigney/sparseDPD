@@ -26,11 +26,17 @@ class NeuralNetwork:
         if model_type == 'OneLayerNetwork':
             hidden_size = 12
             model = OneLayerNetwork(input_size=input_size, hidden_size=hidden_size)
-
+        elif model_type == 'OneLayerNetwork_Skip':
+            hidden_size = 12
+            model = OneLayerNetwork_Skip(input_size=input_size, hidden_size=hidden_size)
         elif model_type == 'PNTDNN_3_layers':
             hidden_size1 = 30
             hidden_size2 = 15
             model = PNTDNN_3_layers(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
+        elif model_type == 'PNTDNN_3_layers_Skip':
+            hidden_size1 = 30
+            hidden_size2 = 15
+            model = PNTDNN_3_layers_Skip(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
         elif model_type == 'PNTDNN_Deep':
             hidden_sizes = [64, 32, 32, 32, 32, 16, 8]
             model = PNTDNN_Deep(input_size=input_size, hidden_sizes=hidden_sizes)
@@ -533,6 +539,25 @@ class OneLayerNetwork(nn.Module):
 
     def forward(self, x):
         return self.fc2(self.relu(self.fc1(x)))
+
+
+class OneLayerNetwork_Skip(nn.Module):
+    """OneLayerNetwork with skip connection from input to first hidden layer output"""
+    def __init__(self, input_size, hidden_size):
+        super(OneLayerNetwork_Skip, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.relu = nn.ReLU()
+        # Input is concatenated with hidden layer output, so input size becomes input_size + hidden_size
+        self.fc2 = nn.Linear(input_size + hidden_size, 2)
+
+    def forward(self, x):
+        h = self.relu(self.fc1(x))
+        # Concatenate original input with hidden layer output (skip connection)
+        h_skip = torch.cat([x, h], dim=1)
+        return self.fc2(h_skip)
+
     
 class PNTDNN_3_layers(nn.Module):    
     def __init__(self, input_size, hidden_size1, hidden_size2):
@@ -548,6 +573,33 @@ class PNTDNN_3_layers(nn.Module):
         x = self.relu2(self.fc2(x))
         x = self.fc3(x)
         return x
+
+
+class PNTDNN_3_layers_Skip(nn.Module):
+    """PNTDNN_3_layers with skip connections at each layer"""
+    def __init__(self, input_size, hidden_size1, hidden_size2):
+        super(PNTDNN_3_layers_Skip, self).__init__()
+        self.input_size = input_size
+        self.hidden_size1 = hidden_size1
+        self.hidden_size2 = hidden_size2
+        
+        self.fc1 = nn.Linear(input_size, hidden_size1)
+        self.relu1 = nn.ReLU()
+        # Skip connection: concat input (input_size) + hidden1 (hidden_size1)
+        self.fc2 = nn.Linear(input_size + hidden_size1, hidden_size2)
+        self.relu2 = nn.ReLU()
+        # Skip connection: concat hidden1 (hidden_size1) + hidden2 (hidden_size2)
+        self.fc3 = nn.Linear(hidden_size1 + hidden_size2, 2)
+
+    def forward(self, x):
+        x_orig = x
+        h1 = self.relu1(self.fc1(x))
+        # First skip: concatenate original input with first hidden layer
+        h1_skip = torch.cat([x_orig, h1], dim=1)
+        h2 = self.relu2(self.fc2(h1_skip))
+        # Second skip: concatenate first hidden layer with second hidden layer
+        h2_skip = torch.cat([h1, h2], dim=1)
+        return self.fc3(h2_skip)
 
 
 # Forward Neural Network model. It will take the same inputs, but contain many layers and neurons
