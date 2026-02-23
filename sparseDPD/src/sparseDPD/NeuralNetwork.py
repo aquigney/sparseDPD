@@ -22,24 +22,27 @@ class NeuralNetwork:
 
     def get_model(self, model_type='OneLayerNetwork'):
         """Return NN model instance"""
-        input_size = self.num_memory_levels * 5 - 2 # Real and Imaginary parts + A and A^3 features
+        input_size = self.num_memory_levels * 4  # Real/Imaginary parts + A and A^3 features
         if model_type == 'OneLayerNetwork':
             hidden_size = 12
             model = OneLayerNetwork(input_size=input_size, hidden_size=hidden_size)
         elif model_type == 'OneLayerNetwork_Skip':
             hidden_size = 12
             model = OneLayerNetwork_Skip(input_size=input_size, hidden_size=hidden_size)
-        elif model_type == 'PNTDNN_3_layers':
+        elif model_type == 'ThreeLayerNetwork':
             hidden_size1 = 30
             hidden_size2 = 15
-            model = PNTDNN_3_layers(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
-        elif model_type == 'PNTDNN_3_layers_Skip':
+            model = ThreeLayerNetwork(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
+        elif model_type == 'ThreeLayerNetwork_Skip':
             hidden_size1 = 30
             hidden_size2 = 15
-            model = PNTDNN_3_layers_Skip(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
-        elif model_type == 'PNTDNN_Deep':
+            model = ThreeLayerNetwork_Skip(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
+        elif model_type == 'MultiLayerNetwork':
             hidden_sizes = [64, 32, 32, 32, 32, 16, 8]
-            model = PNTDNN_Deep(input_size=input_size, hidden_sizes=hidden_sizes)
+            model = MultiLayerNetwork(input_size=input_size, hidden_sizes=hidden_sizes)
+        elif model_type == 'MultiLayerNetwork_Skip':
+            hidden_sizes = [64, 32, 32, 32, 32, 16, 8]
+            model = MultiLayerNetwork_Skip(input_size=input_size, hidden_sizes=hidden_sizes)
         else:
             print("Model type not recognized")
             model = None
@@ -318,7 +321,7 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         M = int(self.num_memory_levels)
         if N < M:
             # no valid samples
-            return np.empty((0, 5 * M - 2), dtype=np.float32)
+            return np.empty((0, 4 * M), dtype=np.float32)
 
         # sliding windows of length M: windows[i] = [x[i], ..., x[i+M-1]]
         try:
@@ -344,19 +347,17 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
 
         A = np.abs(taps)
         A3 = A ** 3
-        A5 = A ** 5
 
         # Build features following previous layout
         real_pn = np.real(pn)               # (N-M+1, M)
-        imag_pn = np.imag(pn)[:, 1:]        # (N-M+1, M-1)
-        A_taps = A[:, 1:]                   # (N-M+1, M-1)
+        imag_pn = np.imag(pn)               # (N-M+1, M)
+        A_taps = A                          # (N-M+1, M)
 
         xfc = np.hstack([
             real_pn,
             imag_pn,
             A_taps,
-            A3,
-            A5
+            A3
         ]).astype(np.float32)
 
         return xfc
@@ -380,7 +381,7 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         valid_t0 = self.num_memory_levels - 1
         n_valid = x_frames.shape[1] - valid_t0
         total = n_frames * n_valid
-        feat_dim = 5 * self.num_memory_levels - 2
+        feat_dim = 4 * self.num_memory_levels 
 
         if total == 0:
             return torch.empty((0, feat_dim), dtype=torch.float32), torch.empty((0, 2), dtype=torch.float32)
@@ -398,15 +399,13 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         pn = taps * c[:, :, None]
         A = np.abs(taps)
         A3 = A ** 3
-        A5 = A ** 5
 
         real_pn = np.real(pn).reshape(total, self.num_memory_levels)
-        imag_pn = np.imag(pn)[:, :, 1:].reshape(total, self.num_memory_levels - 1)
-        A_taps = A[:, :, 1:].reshape(total, self.num_memory_levels - 1)
+        imag_pn = np.imag(pn).reshape(total, self.num_memory_levels)
+        A_taps = A.reshape(total, self.num_memory_levels)
         A3_r = A3.reshape(total, self.num_memory_levels)
-        A5_r = A5.reshape(total, self.num_memory_levels)
 
-        Xfc = np.hstack([real_pn, imag_pn, A_taps, A3_r, A5_r]).astype(np.float32)
+        Xfc = np.hstack([real_pn, imag_pn, A_taps, A3_r]).astype(np.float32)
 
         y_curr = y_frames[:, valid_t0:].reshape(total)
         c_flat = c.reshape(total)
@@ -430,7 +429,7 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         N = x.shape[0]
         M = int(self.num_memory_levels)
         if N < M:
-            return np.empty((0, 5 * M - 2), dtype=np.float32)
+            return np.empty((0, 4 * M), dtype=np.float32)
 
         try:
             from numpy.lib.stride_tricks import sliding_window_view
@@ -444,18 +443,16 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
 
         A = np.abs(taps)
         A3 = A ** 3
-        A5 = A ** 5
 
         real_taps = np.real(taps)               # (N-M+1, M)
-        imag_taps = np.imag(taps)[:, 1:]        # (N-M+1, M-1)
-        A_taps = A[:, 1:]                   # (N-M+1, M-1)
+        imag_taps = np.imag(taps)               # (N-M+1, M)
+        A_taps = A                              # (N-M+1, M)
 
         xfc = np.hstack([
             real_taps,
             imag_taps,
             A_taps,
-            A3,
-            A5
+            A3
         ]).astype(np.float32)
 
         return xfc
@@ -489,7 +486,7 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         n_frames = x_frames.shape[0]
         n_valid = x_frames.shape[1] - self.num_memory_levels
         total = n_frames * n_valid
-        feat_dim = 5 * self.num_memory_levels - 2
+        feat_dim = 4 * self.num_memory_levels
 
         if total == 0:
             return torch.empty((0, feat_dim), dtype=torch.float32), torch.empty((0, 2), dtype=torch.float32)
@@ -507,15 +504,13 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         taps = windows[:, :, ::-1]
         A = np.abs(taps)
         A3 = A ** 3
-        A5 = A ** 5
 
         real_taps = np.real(taps).reshape(total, self.num_memory_levels)
-        imag_taps = np.imag(taps)[:, :, 1:].reshape(total, self.num_memory_levels - 1)
-        A_taps = A[:, :, 1:].reshape(total, self.num_memory_levels - 1)
+        imag_taps = np.imag(taps).reshape(total, self.num_memory_levels)
+        A_taps = A.reshape(total, self.num_memory_levels)
         A3_r = A3.reshape(total, self.num_memory_levels)
-        A5_r = A5.reshape(total, self.num_memory_levels)
 
-        Xfc = np.hstack([real_taps, imag_taps, A_taps, A3_r, A5_r]).astype(np.float32)
+        Xfc = np.hstack([real_taps, imag_taps, A_taps, A3_r]).astype(np.float32)
 
         # Slice output to match the skipped first window (same as gen_output_feature: y[self.num_memory_levels:])
         y_curr = y_frames[:, self.num_memory_levels:].reshape(total)
@@ -559,9 +554,9 @@ class OneLayerNetwork_Skip(nn.Module):
         return self.fc2(h_skip)
 
     
-class PNTDNN_3_layers(nn.Module):    
+class ThreeLayerNetwork(nn.Module):    
     def __init__(self, input_size, hidden_size1, hidden_size2):
-        super(PNTDNN_3_layers, self).__init__()
+        super(ThreeLayerNetwork, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size1)
         self.relu1 = nn.ReLU()
         self.fc2 = nn.Linear(hidden_size1, hidden_size2)
@@ -575,10 +570,10 @@ class PNTDNN_3_layers(nn.Module):
         return x
 
 
-class PNTDNN_3_layers_Skip(nn.Module):
-    """PNTDNN_3_layers with skip connections at each layer"""
+class ThreeLayerNetwork_Skip(nn.Module):
+    """Three-layer network with skip connections at each layer"""
     def __init__(self, input_size, hidden_size1, hidden_size2):
-        super(PNTDNN_3_layers_Skip, self).__init__()
+        super(ThreeLayerNetwork_Skip, self).__init__()
         self.input_size = input_size
         self.hidden_size1 = hidden_size1
         self.hidden_size2 = hidden_size2
@@ -602,10 +597,10 @@ class PNTDNN_3_layers_Skip(nn.Module):
         return self.fc3(h2_skip)
 
 
-# Forward Neural Network model. It will take the same inputs, but contain many layers and neurons
-class PNTDNN_Deep(nn.Module):
+# Multi-layer network without skip connections
+class MultiLayerNetwork(nn.Module):
     def __init__(self, input_size, hidden_sizes):
-        super(PNTDNN_Deep, self).__init__()
+        super(MultiLayerNetwork, self).__init__()
         layers = []
         in_size = input_size
         for hidden_size in hidden_sizes:
@@ -617,3 +612,31 @@ class PNTDNN_Deep(nn.Module):
 
     def forward(self, x):
         return self.network(x)
+
+
+class MultiLayerNetwork_Skip(nn.Module):
+    """Multi-layer network with skip connections from input to each hidden block and output."""
+    def __init__(self, input_size, hidden_sizes):
+        super(MultiLayerNetwork_Skip, self).__init__()
+        self.input_size = input_size
+        self.hidden_layers = nn.ModuleList()
+        self.activation = nn.ReLU()
+
+        in_size = input_size
+        for idx, hidden_size in enumerate(hidden_sizes):
+            layer_in = in_size if idx == 0 else in_size + input_size
+            self.hidden_layers.append(nn.Linear(layer_in, hidden_size))
+            in_size = hidden_size
+
+        self.output_layer = nn.Linear(in_size + input_size, 2)
+
+    def forward(self, x):
+        x_orig = x
+        h = x
+        for idx, layer in enumerate(self.hidden_layers):
+            if idx == 0:
+                h = self.activation(layer(h))
+            else:
+                h = self.activation(layer(torch.cat([h, x_orig], dim=1)))
+        h_out = torch.cat([h, x_orig], dim=1)
+        return self.output_layer(h_out)
