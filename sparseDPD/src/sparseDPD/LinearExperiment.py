@@ -1,5 +1,5 @@
 from .Experiment import Experiment
-from .NeuralNetwork import OneLayerNetwork
+import torch.nn as nn
 
 class LinearExperiment(Experiment):
     def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset, use_frames=True, frame_stride=100, frame_length=500):
@@ -18,6 +18,13 @@ class LinearExperiment(Experiment):
         all_valid_losses = []
         all_best_epochs = []
 
+        linear_layer_names = [
+            name for name, module in self.nn_model_copy.nn_model.named_modules()
+            if isinstance(module, nn.Linear)
+        ]
+        if not linear_layer_names:
+            raise ValueError("No linear layers found to prune in model")
+
         for i in range(self.num_prune_iterations):
             print(f"\n{'='*60}")
             print(f"Pruning Iteration {i+1}/{self.num_prune_iterations}")
@@ -25,10 +32,7 @@ class LinearExperiment(Experiment):
             
             # Apply pruning to the current model (iterative pruning of remaining weights)
             print(f"Pruning {self.prune_amount*100:.1f}% of remaining weights...")
-            if isinstance(self.nn_model_copy.nn_model, OneLayerNetwork):
-                self.nn_model_copy.prune_model(["fc1", "fc2"], self.prune_amount)
-            else:
-                TypeError("Unknown Model Prune Type")
+            self.nn_model_copy.prune_model(linear_layer_names, self.prune_amount)
             
             # Calculate current pruning percentage
             current_prune_pct = self.nn_model_copy._get_pruning_percentage()

@@ -20,7 +20,7 @@ class Experiment:
         initial_nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
         
         initial_valid_loss = self.nn_model_copy._calculate_initial_valid_loss(self.valid_dataset)
-        prune_percentages, nmse_results, all_valid_losses, all_best_epochs, all_valid_losses =  self.prune()
+        prune_percentages, nmse_results, valid_losses_final, all_best_epochs, all_valid_losses =  self.prune()
         self.plot_results(prune_percentages, nmse_results, initial_nmse)
         self.plot_training_curves(all_valid_losses, all_best_epochs, prune_percentages)
 
@@ -29,11 +29,11 @@ class Experiment:
         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
         # Add the initial values to the results
-        nmse_results.insert(0, initial_nmse)
-        prune_percentages.insert(0, 0)
+        nmse_to_plot = [initial_nmse] + nmse_results
+        prune_pct_to_plot = [0] + prune_percentages
         
         # Plot NMSE
-        ax.plot(prune_percentages, nmse_results, marker='o', linewidth=2, markersize=8, color='tab:blue')
+        ax.plot(prune_pct_to_plot, nmse_to_plot, marker='o', linewidth=2, markersize=8, color='tab:blue')
         ax.set_xlabel('Pruning Percentage (%)', fontsize=12)
         ax.set_ylabel('NMSE (dB)', fontsize=12)
         ax.set_title('Model Performance vs Pruning Percentage', fontsize=14, fontweight='bold')

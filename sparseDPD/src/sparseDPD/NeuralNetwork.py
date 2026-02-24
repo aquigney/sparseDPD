@@ -191,14 +191,24 @@ class NeuralNetwork:
     def prune_model(self, parameters_to_prune_list, prune_amount=0.2):
         """Apply pruning to the model in-place"""
         parameters_to_prune = []
+        named_modules = dict(self.nn_model.named_modules())
 
-        if "fc1" in parameters_to_prune_list:
-            parameters_to_prune.append((self.nn_model.fc1, 'weight'))
-        if "fc2" in parameters_to_prune_list:
-            parameters_to_prune.append((self.nn_model.fc2, 'weight'))
-        if "fc3" in parameters_to_prune_list:
-            parameters_to_prune.append((self.nn_model.fc3, 'weight'))
-        
+        for layer_name in parameters_to_prune_list:
+            module = named_modules.get(layer_name)
+            if isinstance(module, nn.Linear):
+                parameters_to_prune.append((module, 'weight'))
+
+        if not parameters_to_prune:
+            available_linear_layers = [
+                name for name, module in self.nn_model.named_modules()
+                if isinstance(module, nn.Linear)
+            ]
+            raise ValueError(
+                "No valid linear layers were selected for pruning. "
+                f"Requested: {parameters_to_prune_list}. "
+                f"Available linear layers: {available_linear_layers}"
+            )
+
         prune.global_unstructured(
             parameters_to_prune,
             pruning_method=prune.L1Unstructured,
@@ -520,6 +530,182 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         Yout[:, 1] = np.imag(y_curr).astype(np.float32)
 
         return torch.from_numpy(Xfc), torch.from_numpy(Yout)
+
+
+class PGJANET_NeuralNetwork(NeuralNetwork):
+    """PGJANET-style recurrent model wrapper using sequence IQ features."""
+    def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False):
+        super().__init__(num_memory_levels, model_type, forward_model)
+
+    def get_model(self, model_type='PGJANETNetwork'):
+        """Return PGJANET model instance."""
+        if model_type != 'PGJANETNetwork':
+            print("Model type not recognized for PGJANET_NeuralNetwork")
+            return None
+        hidden_size = 64
+        return PGJANETNetwork(hidden_size=hidden_size, output_size=2)
+
+    def gen_input_feature(self, x):
+        """Generate sequence IQ features shaped (N_valid, memory, 2)."""
+        x = np.asarray(x)
+        N = x.shape[0]
+        M = int(self.num_memory_levels)
+
+        if N < M:
+            return np.empty((0, M, 2), dtype=np.float32)
+
+        try:
+            from numpy.lib.stride_tricks import sliding_window_view
+            windows = sliding_window_view(x, window_shape=M)
+        except Exception:
+            windows = np.stack([x[i:N - M + i + 1] for i in range(M)], axis=1)
+
+        windows = windows[1:]
+        x_seq = np.empty((windows.shape[0], M, 2), dtype=np.float32)
+        x_seq[:, :, 0] = np.real(windows).astype(np.float32)
+        x_seq[:, :, 1] = np.imag(windows).astype(np.float32)
+        return x_seq
+
+    def gen_output_feature(self, x, y):
+        """Generate aligned sequence output targets shaped (N_valid, memory, 2)."""
+        y = np.asarray(y)
+        N = y.shape[0]
+        M = int(self.num_memory_levels)
+
+        if N < M:
+            return np.empty((0, M, 2), dtype=np.float32)
+
+        try:
+            from numpy.lib.stride_tricks import sliding_window_view
+            y_windows = sliding_window_view(y, window_shape=M)
+        except Exception:
+            y_windows = np.stack([y[i:N - M + i + 1] for i in range(M)], axis=1)
+
+        y_windows = y_windows[1:]
+        # Return ALL timesteps, not just the last one
+        y_seq = np.empty((y_windows.shape[0], M, 2), dtype=np.float32)
+        y_seq[:, :, 0] = np.real(y_windows).astype(np.float32)
+        y_seq[:, :, 1] = np.imag(y_windows).astype(np.float32)
+        return y_seq
+
+    def generate_model_output(self, x):
+        """Generate unnormalized output using sequence-to-sequence predictions."""
+        self.nn_model.eval()
+        with torch.no_grad():
+            xseq = self.gen_input_feature(x)  # (N_valid, M, 2)
+            X = torch.tensor(xseq, dtype=torch.float32).to(self.device)
+            preds = self.nn_model(X).detach().cpu().numpy()  # (N_valid, M, 2)
+            # Use last timestep for inference alignment
+            preds_last = preds[:, -1, :]  # (N_valid, 2)
+
+        return preds_last[:, 0] + 1j * preds_last[:, 1]
+
+    @staticmethod
+    def _get_frames(sequence, frame_length, stride):
+        """Extract frames from sequence."""
+        n = len(sequence)
+        n_frames = (n - frame_length) // stride + 1
+        return np.stack([sequence[i * stride:i * stride + frame_length] for i in range(n_frames)])
+
+    def _precompute_iq_features(self, x_frames, y_frames):
+        """Precompute sequence-to-sequence frame features and targets.
+
+        X: (n_frames, frame_length, 2)
+        Y: (n_frames, frame_length, 2)  -> ALL timesteps of each output frame
+        """
+        n_frames = x_frames.shape[0]
+        frame_len = x_frames.shape[1]
+
+        if n_frames == 0 or frame_len == 0:
+            return (
+                torch.empty((0, 0, 2), dtype=torch.float32),
+                torch.empty((0, 0, 2), dtype=torch.float32)
+            )
+
+        Xseq = np.empty((n_frames, frame_len, 2), dtype=np.float32)
+        Xseq[:, :, 0] = np.real(x_frames).astype(np.float32)
+        Xseq[:, :, 1] = np.imag(x_frames).astype(np.float32)
+
+        # All timesteps as targets (sequence-to-sequence)
+        Yseq = np.empty((n_frames, frame_len, 2), dtype=np.float32)
+        Yseq[:, :, 0] = np.real(y_frames).astype(np.float32)
+        Yseq[:, :, 1] = np.imag(y_frames).astype(np.float32)
+
+        return torch.from_numpy(Xseq), torch.from_numpy(Yseq)
+
+
+class PGJANETNetwork(nn.Module):
+    """PGJANET-inspired recurrent cell operating on IQ sequences."""
+    def __init__(self, hidden_size, output_size, bias=True):
+        super(PGJANETNetwork, self).__init__()
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.bias = bias
+
+        self.W_a = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+        self.W_p1 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+        self.W_p2 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+
+        self.W_f = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)
+        self.W_g = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)
+
+        self.W_o = nn.Linear(hidden_size, output_size, bias=bias)
+        self.reset_parameters()
+
+    def forward(self, x, h_0=None):
+        if x.ndim != 3 or x.size(-1) != 2:
+            raise ValueError(f"PGJANETNetwork expects x shaped (B,T,2). Got {tuple(x.shape)}")
+
+        batch_size, seq_len, _ = x.shape
+        if h_0 is None:
+            h = torch.zeros(batch_size, self.hidden_size, device=x.device, dtype=x.dtype)
+        else:
+            if h_0.ndim == 3:
+                h = h_0[0]
+            elif h_0.ndim == 2:
+                h = h_0
+            else:
+                raise ValueError(f"h_0 must have shape (B,H) or (L,B,H). Got {tuple(h_0.shape)}")
+
+        outputs = []
+        for t in range(seq_len):
+            x_t = x[:, t, :]
+            i_x = x_t[:, 0].unsqueeze(-1)
+            q_x = x_t[:, 1].unsqueeze(-1)
+            amp_x = torch.sqrt(torch.clamp(i_x * i_x + q_x * q_x, min=1e-12))
+
+            theta = torch.atan2(q_x, i_x)
+            cos_theta = torch.cos(theta)
+            sin_theta = torch.sin(theta)
+
+            h_x = torch.cat([h, amp_x], dim=-1)
+            h_cos = torch.cat([h, cos_theta], dim=-1)
+            h_sin = torch.cat([h, sin_theta], dim=-1)
+
+            a_n = torch.tanh(self.W_a(h_x))
+            p1_n = torch.tanh(self.W_p1(h_cos))
+            p2_n = torch.tanh(self.W_p2(h_sin))
+
+            u_n = a_n * p1_n * p2_n * (1 - a_n) * (1 - p1_n) * (1 - p2_n)
+            h_u = torch.cat([h, u_n], dim=-1)
+
+            f_n = torch.sigmoid(self.W_f(h_u))
+            g_n = torch.tanh(self.W_g(h_u))
+            h = f_n * h + (1 - f_n) * g_n
+            
+            # Collect output at each timestep
+            outputs.append(self.W_o(h))
+
+        # Sequence-to-sequence: return all timestep outputs
+        outputs = torch.stack(outputs, dim=1)  # (batch_size, seq_len, output_size)
+        return outputs
+    
+    def reset_parameters(self):
+        for module in [self.W_a, self.W_p1, self.W_p2, self.W_f, self.W_g, self.W_o]:
+            if hasattr(module, 'weight'):
+                nn.init.xavier_uniform_(module.weight)
+            if hasattr(module, 'bias') and module.bias is not None:
+                nn.init.constant_(module.bias, 0)
 
 
 
