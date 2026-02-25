@@ -12,4 +12,4 @@ from .Experiment import Experiment
 
 # etc...
 
-__all__ = ["Datapath", "Dataset", "DataManager", "NeuralNetwork", "ThreeLayerNetwork", "MultiLayerNetwork", "MultiLayerNetwork_Skip", "PNTDNN_NeuralNetwork", "ARVTDNN_NeuralNetwork", "PGJANET_NeuralNetwork", "PGJANETNetwork", "Volterra", "DeltaGRUNetwork", "LinearExperiment", "NodePruningExperiment", "Experiment"]
+__all__ = ["Datapath", "Dataset", "DataManager", "NeuralNetwork", "ThreeLayerNetwork", "MultiLayerNetwork", "MultiLayerNetwork_Skip", "PNTDNN_NeuralNetwork", "ARVTDNN_NeuralNetwork", "PGJANET_NeuralNetwork", "PGJANETNetwork", "DeltaGRUNetwork", "LinearExperiment", "NodePruningExperiment", "Experiment"]

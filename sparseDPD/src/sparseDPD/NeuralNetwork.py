@@ -530,11 +530,12 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         Yout[:, 1] = np.imag(y_curr).astype(np.float32)
 
         return torch.from_numpy(Xfc), torch.from_numpy(Yout)
-
+    
 
 class PGJANET_NeuralNetwork(NeuralNetwork):
-    """PGJANET-style recurrent model wrapper using sequence IQ features."""
+    """PGJANET recurrent network wrapper using sequence IQ features."""
     def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False):
+        # For PGJANET, num_memory_levels acts as the sequence length
         super().__init__(num_memory_levels, model_type, forward_model)
 
     def get_model(self, model_type='PGJANETNetwork'):
@@ -543,10 +544,18 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
             print("Model type not recognized for PGJANET_NeuralNetwork")
             return None
         hidden_size = 64
-        return PGJANETNetwork(hidden_size=hidden_size, output_size=2)
+        output_size = 2
+        return PGJANETNetwork(hidden_size=hidden_size, output_size=output_size)
 
     def gen_input_feature(self, x):
-        """Generate sequence IQ features shaped (N_valid, memory, 2)."""
+        """Generate sequence IQ features shaped (N_valid, seq_len, 2).
+        
+        Args:
+            x: Complex input array of shape (N,)
+            
+        Returns:
+            Array of shape (N_valid, M, 2) where M is num_memory_levels (sequence length)
+        """
         x = np.asarray(x)
         N = x.shape[0]
         M = int(self.num_memory_levels)
@@ -554,20 +563,35 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         if N < M:
             return np.empty((0, M, 2), dtype=np.float32)
 
+        # Create sliding windows of IQ samples
         try:
             from numpy.lib.stride_tricks import sliding_window_view
             windows = sliding_window_view(x, window_shape=M)
         except Exception:
             windows = np.stack([x[i:N - M + i + 1] for i in range(M)], axis=1)
 
-        windows = windows[1:]
+        # Skip first window to align with output (like other implementations)
+        windows = windows[1:]  # Shape: (N-M, M)
+
+        # Convert to IQ format: (N_valid, M, 2)
         x_seq = np.empty((windows.shape[0], M, 2), dtype=np.float32)
-        x_seq[:, :, 0] = np.real(windows).astype(np.float32)
-        x_seq[:, :, 1] = np.imag(windows).astype(np.float32)
+        x_seq[:, :, 0] = np.real(windows).astype(np.float32)  # I component
+        x_seq[:, :, 1] = np.imag(windows).astype(np.float32)  # Q component
+        
         return x_seq
 
     def gen_output_feature(self, x, y):
-        """Generate aligned sequence output targets shaped (N_valid, memory, 2)."""
+        """Generate aligned sequence output targets shaped (N_valid, seq_len, 2).
+        
+        For sequence-to-sequence training, returns all timesteps.
+        
+        Args:
+            x: Complex input array (for alignment)
+            y: Complex output array
+            
+        Returns:
+            Array of shape (N_valid, M, 2) for sequence-to-sequence training
+        """
         y = np.asarray(y)
         N = y.shape[0]
         M = int(self.num_memory_levels)
@@ -575,21 +599,28 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         if N < M:
             return np.empty((0, M, 2), dtype=np.float32)
 
+        # Create sliding windows for output
         try:
             from numpy.lib.stride_tricks import sliding_window_view
             y_windows = sliding_window_view(y, window_shape=M)
         except Exception:
             y_windows = np.stack([y[i:N - M + i + 1] for i in range(M)], axis=1)
 
-        y_windows = y_windows[1:]
-        # Return ALL timesteps, not just the last one
+        # Skip first window to align with input
+        y_windows = y_windows[1:]  # Shape: (N-M, M)
+
+        # Convert to IQ format for all timesteps: (N_valid, M, 2)
         y_seq = np.empty((y_windows.shape[0], M, 2), dtype=np.float32)
         y_seq[:, :, 0] = np.real(y_windows).astype(np.float32)
         y_seq[:, :, 1] = np.imag(y_windows).astype(np.float32)
+        
         return y_seq
 
     def generate_model_output(self, x):
-        """Generate unnormalized output using sequence-to-sequence predictions."""
+        """Generate unnormalized output using sequence-to-sequence predictions.
+        
+        For inference, we extract the last timestep from each sequence prediction.
+        """
         self.nn_model.eval()
         with torch.no_grad():
             xseq = self.gen_input_feature(x)  # (N_valid, M, 2)
@@ -600,116 +631,119 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
 
         return preds_last[:, 0] + 1j * preds_last[:, 1]
 
-    @staticmethod
-    def _get_frames(sequence, frame_length, stride):
-        """Extract frames from sequence."""
-        n = len(sequence)
-        n_frames = (n - frame_length) // stride + 1
-        return np.stack([sequence[i * stride:i * stride + frame_length] for i in range(n_frames)])
 
-    def _precompute_iq_features(self, x_frames, y_frames):
-        """Precompute sequence-to-sequence frame features and targets.
-
-        X: (n_frames, frame_length, 2)
-        Y: (n_frames, frame_length, 2)  -> ALL timesteps of each output frame
-        """
-        n_frames = x_frames.shape[0]
-        frame_len = x_frames.shape[1]
-
-        if n_frames == 0 or frame_len == 0:
-            return (
-                torch.empty((0, 0, 2), dtype=torch.float32),
-                torch.empty((0, 0, 2), dtype=torch.float32)
-            )
-
-        Xseq = np.empty((n_frames, frame_len, 2), dtype=np.float32)
-        Xseq[:, :, 0] = np.real(x_frames).astype(np.float32)
-        Xseq[:, :, 1] = np.imag(x_frames).astype(np.float32)
-
-        # All timesteps as targets (sequence-to-sequence)
-        Yseq = np.empty((n_frames, frame_len, 2), dtype=np.float32)
-        Yseq[:, :, 0] = np.real(y_frames).astype(np.float32)
-        Yseq[:, :, 1] = np.imag(y_frames).astype(np.float32)
-
-        return torch.from_numpy(Xseq), torch.from_numpy(Yseq)
-
+##### PyTorch models #####
 
 class PGJANETNetwork(nn.Module):
-    """PGJANET-inspired recurrent cell operating on IQ sequences."""
+    """PGJANET recurrent cell for PA modeling with amplitude and phase gating.
+    
+    Based on OpenDPD's PGJANET architecture with gates conditioned on
+    amplitude and phase (cos/sin) components of the input signal.
+    """
     def __init__(self, hidden_size, output_size, bias=True):
         super(PGJANETNetwork, self).__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.bias = bias
 
-        self.W_a = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
-        self.W_p1 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
-        self.W_p2 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
-
-        self.W_f = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)
-        self.W_g = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)
-
+        # Amplitude and phase gates (input concatenated with hidden state)
+        self.W_a = nn.Linear(hidden_size + 1, hidden_size, bias=bias)   # Amplitude gate
+        self.W_p1 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)  # Cosine phase gate
+        self.W_p2 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)  # Sine phase gate
+        
+        # Processing gates
+        self.W_f = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)  # Forget gate
+        self.W_g = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)  # Candidate gate
+        
+        # Output projection
         self.W_o = nn.Linear(hidden_size, output_size, bias=bias)
+        
         self.reset_parameters()
 
     def forward(self, x, h_0=None):
+        """Forward pass through PGJANET cell.
+        
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, 2) where last dim is [I, Q]
+            h_0: Initial hidden state (optional)
+            
+        Returns:
+            Tensor of shape (batch_size, seq_len, output_size) with predictions for all timesteps
+        """
         if x.ndim != 3 or x.size(-1) != 2:
             raise ValueError(f"PGJANETNetwork expects x shaped (B,T,2). Got {tuple(x.shape)}")
 
         batch_size, seq_len, _ = x.shape
+        
+        # Initialize hidden state
         if h_0 is None:
             h = torch.zeros(batch_size, self.hidden_size, device=x.device, dtype=x.dtype)
         else:
             if h_0.ndim == 3:
-                h = h_0[0]
+                h = h_0[0]  # Take first layer if multi-layer format
             elif h_0.ndim == 2:
                 h = h_0
             else:
                 raise ValueError(f"h_0 must have shape (B,H) or (L,B,H). Got {tuple(h_0.shape)}")
 
         outputs = []
+        
+        # Process sequence timestep by timestep
         for t in range(seq_len):
-            x_t = x[:, t, :]
-            i_x = x_t[:, 0].unsqueeze(-1)
-            q_x = x_t[:, 1].unsqueeze(-1)
-            amp_x = torch.sqrt(torch.clamp(i_x * i_x + q_x * q_x, min=1e-12))
-
+            x_t = x[:, t, :]  # (batch_size, 2)
+            
+            # Extract I and Q components
+            i_x = x_t[:, 0].unsqueeze(-1)  # (batch_size, 1)
+            q_x = x_t[:, 1].unsqueeze(-1)  # (batch_size, 1)
+            
+            # Calculate amplitude
+            amp_x = torch.sqrt(torch.clamp(i_x**2 + q_x**2, min=1e-12))
+            
+            # Calculate phase components
             theta = torch.atan2(q_x, i_x)
             cos_theta = torch.cos(theta)
             sin_theta = torch.sin(theta)
 
-            h_x = torch.cat([h, amp_x], dim=-1)
-            h_cos = torch.cat([h, cos_theta], dim=-1)
-            h_sin = torch.cat([h, sin_theta], dim=-1)
+            # Concatenate hidden state with amplitude/phase features for gates
+            h_x = torch.cat([h, amp_x], dim=-1)        # (batch_size, hidden_size + 1)
+            h_cos = torch.cat([h, cos_theta], dim=-1)  # (batch_size, hidden_size + 1)
+            h_sin = torch.cat([h, sin_theta], dim=-1)  # (batch_size, hidden_size + 1)
 
+            # Compute amplitude and phase gates
             a_n = torch.tanh(self.W_a(h_x))
             p1_n = torch.tanh(self.W_p1(h_cos))
             p2_n = torch.tanh(self.W_p2(h_sin))
 
+            # Compute modulation signal u_n (element-wise product with complements)
             u_n = a_n * p1_n * p2_n * (1 - a_n) * (1 - p1_n) * (1 - p2_n)
-            h_u = torch.cat([h, u_n], dim=-1)
 
+            # Concatenate hidden state with modulation signal
+            h_u = torch.cat([h, u_n], dim=-1)  # (batch_size, 2*hidden_size)
+
+            # Compute forget and candidate gates
             f_n = torch.sigmoid(self.W_f(h_u))
             g_n = torch.tanh(self.W_g(h_u))
+
+            # Update hidden state (GRU-like update)
             h = f_n * h + (1 - f_n) * g_n
             
-            # Collect output at each timestep
-            outputs.append(self.W_o(h))
+            # Compute output for this timestep
+            y_n = self.W_o(h)
+            outputs.append(y_n)
 
-        # Sequence-to-sequence: return all timestep outputs
-        outputs = torch.stack(outputs, dim=1)  # (batch_size, seq_len, output_size)
+        # Stack outputs to get (batch_size, seq_len, output_size)
+        outputs = torch.stack(outputs, dim=1)
+        
         return outputs
     
     def reset_parameters(self):
+        """Initialize network parameters using Xavier uniform initialization."""
         for module in [self.W_a, self.W_p1, self.W_p2, self.W_f, self.W_g, self.W_o]:
             if hasattr(module, 'weight'):
                 nn.init.xavier_uniform_(module.weight)
             if hasattr(module, 'bias') and module.bias is not None:
                 nn.init.constant_(module.bias, 0)
 
-
-
-##### PyTorch models #####
 
 class OneLayerNetwork(nn.Module):
     def __init__(self, input_size, hidden_size):
