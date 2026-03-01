@@ -80,7 +80,7 @@ class NeuralNetwork:
         
         train_losses = []
         valid_losses = []
-        best_valid_loss = float('inf')
+        best_valid_loss = float('inf') # original set as infinity to ensure any valid loss will be better
         best_model_state = None
         best_epoch = 0
 
