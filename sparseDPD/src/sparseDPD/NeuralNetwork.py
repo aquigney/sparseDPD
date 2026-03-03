@@ -19,6 +19,7 @@ class NeuralNetwork:
         self.num_memory_levels = num_memory_levels
         self.nn_model = self.get_model(model_type).to(self.device)
         self.forward_model = forward_model  # True if forward model, False if inverse model
+        self.initial_state_dict = None  # For lottery ticket hypothesis
 
     def get_model(self, model_type='OneLayerNetwork'):
         """Return NN model instance"""
@@ -68,12 +69,49 @@ class NeuralNetwork:
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
         return dataloader
 
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500, grad_clip_val=0.0):
+    def save_initial_weights(self):
+        """Save the current model weights as initial weights for lottery ticket hypothesis."""
+        self.initial_state_dict = copy.deepcopy(self.nn_model.state_dict())
+        print("Initial weights saved for lottery ticket hypothesis.")
+
+    def reset_to_initial_weights(self):
+        """Reset model weights to initial values while preserving pruning masks.
+        
+        This is used for lottery ticket hypothesis: after pruning, reset the unpruned
+        weights to their original initialization values.
+        """
+        if self.initial_state_dict is None:
+            raise ValueError("No initial weights saved. Call save_initial_weights() first.")
+        
+        current_state = self.nn_model.state_dict()
+        
+        # Reset weights while preserving masks
+        for name, param in self.initial_state_dict.items():
+            if name in current_state:
+                if name.endswith('_mask'):
+                    # Keep current mask (don't reset pruning masks)
+                    continue
+                elif name.endswith('_orig'):
+                    # For pruned parameters, reset the original weights
+                    current_state[name] = param.clone()
+                else:
+                    # For non-pruned parameters, just reset them
+                    current_state[name] = param.clone()
+        
+        self.nn_model.load_state_dict(current_state)
+        print("Model weights reset to initial values (pruning masks preserved).")
+
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500, grad_clip_val=0.0, reset_weights=False):
         """Train model and return the best model based on validation loss.
 
         Args:
             grad_clip_val (float): max norm for gradient clipping; 0.0 disables clipping.
+            reset_weights (bool): if True, reset weights to initial values before training
+                                 (for lottery ticket hypothesis). Default is False.
         """
+        # Reset weights if requested (for lottery ticket hypothesis)
+        if reset_weights:
+            self.reset_to_initial_weights()
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6) #min_lr=1e-6?
@@ -543,7 +581,7 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         if model_type != 'PGJANETNetwork':
             print("Model type not recognized for PGJANET_NeuralNetwork")
             return None
-        hidden_size = 64
+        hidden_size = 14
         output_size = 2
         return PGJANETNetwork(hidden_size=hidden_size, output_size=output_size)
 
@@ -737,7 +775,6 @@ class PGJANETNetwork(nn.Module):
         return outputs
     
     def reset_parameters(self):
-        """Initialize network parameters using Xavier uniform initialization."""
         for module in [self.W_a, self.W_p1, self.W_p2, self.W_f, self.W_g, self.W_o]:
             if hasattr(module, 'weight'):
                 nn.init.xavier_uniform_(module.weight)

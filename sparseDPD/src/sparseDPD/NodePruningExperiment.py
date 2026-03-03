@@ -34,6 +34,8 @@ class NodePruningExperiment(Experiment):
         all_valid_losses = []
         all_best_epochs = []
 
+
+
         for i in range(self.num_prune_iterations):
             print(f"\n{'='*60}")
             print(f"Pruning Iteration {i+1}/{self.num_prune_iterations}")
@@ -54,6 +56,7 @@ class NodePruningExperiment(Experiment):
                 use_frames=self.use_frames,
                 frame_stride=self.frame_stride,
                 frame_length=self.frame_length,
+                
             )
 
             all_valid_losses.append(valid_losses)
