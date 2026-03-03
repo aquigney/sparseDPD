@@ -2,6 +2,7 @@ from .Experiment import Experiment
 import torch.nn as nn
 
 class LotteryTicketExperiment(Experiment):
+    """Similar to regular pruning but we reset the weights to their original position every time we prune"""
     def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset, use_frames=True, frame_stride=100, frame_length=500):
         super().__init__(nn_model, training_dataset, valid_dataset, test_dataset)
         self.num_prune_iterations = num_prune_iterations
