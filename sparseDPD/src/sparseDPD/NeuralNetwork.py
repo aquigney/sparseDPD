@@ -69,39 +69,15 @@ class NeuralNetwork:
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
         return dataloader
 
-    def save_initial_weights(self):
-        """Save the current model weights as initial weights for lottery ticket hypothesis."""
-        self.initial_state_dict = copy.deepcopy(self.nn_model.state_dict())
-        print("Initial weights saved for lottery ticket hypothesis.")
+    def _align_loss_tensors(self, preds, targets):
+        """Align model predictions and targets before loss calculation.
 
-    def reset_to_initial_weights(self):
-        """Reset model weights to initial values while preserving pruning masks.
-        
-        This is used for lottery ticket hypothesis: after pruning, reset the unpruned
-        weights to their original initialization values.
+        Default behavior is sequence-to-sequence / direct element-wise loss.
+        Subclasses can override for model-specific training targets.
         """
-        if self.initial_state_dict is None:
-            raise ValueError("No initial weights saved. Call save_initial_weights() first.")
-        
-        current_state = self.nn_model.state_dict()
-        
-        # Reset weights while preserving masks
-        for name, param in self.initial_state_dict.items():
-            if name in current_state:
-                if name.endswith('_mask'):
-                    # Keep current mask (don't reset pruning masks)
-                    continue
-                elif name.endswith('_orig'):
-                    # For pruned parameters, reset the original weights
-                    current_state[name] = param.clone()
-                else:
-                    # For non-pruned parameters, just reset them
-                    current_state[name] = param.clone()
-        
-        self.nn_model.load_state_dict(current_state)
-        print("Model weights reset to initial values (pruning masks preserved).")
+        return preds, targets
 
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500, grad_clip_val=0.0, reset_weights=False):
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500, grad_clip_val=0.0):
         """Train model and return the best model based on validation loss.
 
         Args:
@@ -148,7 +124,8 @@ class NeuralNetwork:
                 yb = yb.to(self.device)
                 optimizer.zero_grad()
                 preds = self.nn_model(xb)
-                loss = criterion(preds, yb)
+                loss_preds, loss_targets = self._align_loss_tensors(preds, yb)
+                loss = criterion(loss_preds, loss_targets)
                 loss.backward()
                 # Optional gradient clipping
                 if grad_clip_val and grad_clip_val > 0.0:
@@ -169,7 +146,8 @@ class NeuralNetwork:
                     xb = xb.to(self.device)
                     yb = yb.to(self.device)
                     preds = self.nn_model(xb)
-                    loss = criterion(preds, yb)
+                    loss_preds, loss_targets = self._align_loss_tensors(preds, yb)
+                    loss = criterion(loss_preds, loss_targets)
                     running_valid_loss += loss.item() * xb.size(0)
 
             # Average validation loss
@@ -266,7 +244,8 @@ class NeuralNetwork:
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
                 preds = self.nn_model(xb)
-                loss = criterion(preds, yb)
+                loss_preds, loss_targets = self._align_loss_tensors(preds, yb)
+                loss = criterion(loss_preds, loss_targets)
                 initial_valid_loss += loss.item() * xb.size(0)
         return initial_valid_loss
 
@@ -581,7 +560,7 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         if model_type != 'PGJANETNetwork':
             print("Model type not recognized for PGJANET_NeuralNetwork")
             return None
-        hidden_size = 14
+        hidden_size = 15
         output_size = 2
         return PGJANETNetwork(hidden_size=hidden_size, output_size=output_size)
 
@@ -668,6 +647,12 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
             preds_last = preds[:, -1, :]  # (N_valid, 2)
 
         return preds_last[:, 0] + 1j * preds_last[:, 1]
+
+    def _align_loss_tensors(self, preds, targets):
+        """Many-to-one training for PGJANET: compute loss on last timestep only."""
+        if preds.ndim == 3 and targets.ndim == 3:
+            return preds[:, -1, :], targets[:, -1, :]
+        return preds, targets
 
 
 ##### PyTorch models #####
