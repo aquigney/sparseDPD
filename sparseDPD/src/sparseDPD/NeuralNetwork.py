@@ -175,9 +175,9 @@ class NeuralNetwork:
             for xb, yb in valid_loader:
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
+
                 preds = self.nn_model(xb)
-                loss_preds, loss_targets = self._align_loss_tensors(preds, yb)
-                loss = criterion(loss_preds, loss_targets)
+                loss = criterion(preds, yb)
                 initial_valid_loss += loss.item() * xb.size(0)
         return initial_valid_loss
 
@@ -413,17 +413,26 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
     
 
 class PGJANET_NeuralNetwork(NeuralNetwork):
-    """PGJANET recurrent network wrapper using sequence IQ features."""
-    def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False, batch_size=256):
+    def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False, batch_size=256, seq_len=None, seq_stride=None):
         super().__init__(num_memory_levels, model_type, forward_model, batch_size=batch_size)
-        
+        self.seq_len = seq_len if seq_len is not None else num_memory_levels
+        self.seq_stride = seq_stride if seq_stride is not None else 1
 
+    def training_data(self, dataset):
+        if self.forward_model:
+            x_in, y_out = dataset.input_data, dataset.output_data
+        else:
+            y_out, x_in = dataset.input_data, dataset.output_data
+
+        X, Y_last = self.make_windows_iq(x_in, y_out, self.seq_len)
+        return X, Y_last
+    
     def get_model(self, model_type='PGJANETNetwork'):
         """Return PGJANET model instance."""
         if model_type != 'PGJANETNetwork':
             print("Model type not recognized for PGJANET_NeuralNetwork")
             return None
-        hidden_size = 15
+        hidden_size = 32
         output_size = 2
         return PGJANETNetwork(hidden_size=hidden_size, output_size=output_size)
 
@@ -431,12 +440,25 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         return np.array([np.real(x), np.imag(x)]).T.astype(np.float32)
     
     def generate_model_output(self, x):
-        """Generate phase denormalised output for given input x using trained NN model. Return both trimmed input and output"""
+        """Generate output for given input x using trained NN model with windowing."""
         self.nn_model.eval()
         with torch.no_grad():
-            xfc = self.gen_input_feature(x)
-            X = torch.tensor(xfc, dtype=torch.float32).to(self.device)
-            preds = self.nn_model(X).detach().cpu().numpy()
+            # Create windows - only need input windows for prediction
+            x_iq = np.stack([np.real(x), np.imag(x)], axis=-1).astype(np.float32)  # (N,2)
+            N = x_iq.shape[0]
+            T = self.seq_len
+            
+            if N < T:
+                return np.array([], dtype=np.complex128)
+            
+            # Create input windows (N-T+1, T, 2)
+            X_windows = np.stack([x_iq[i:i+T] for i in range(N - T + 1)], axis=0)
+            X = torch.tensor(X_windows, dtype=torch.float32).to(self.device)
+            preds = self.nn_model(X).detach().cpu().numpy()  # (N-T+1, T, 2)
+            
+            # Extract last timestep only (many-to-one prediction)
+            preds = preds[:, -1, :]  # (N-T+1, 2)
+        
         # Reconstruct complex output
         y_pred = preds[:, 0] + 1j * preds[:, 1]
         return y_pred
@@ -446,114 +468,178 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         """Generates features from output signal for NN model"""
         return np.array([np.real(y), np.imag(y)]).T.astype(np.float32)
 
-    def _align_loss_tensors(self, preds, targets):
-        """Many-to-one training for PGJANET: compute loss on last timestep only."""
-        if preds.ndim == 3 and targets.ndim == 3:
-            return preds[:, -1, :], targets[:, -1, :]
-        return preds, targets
     
     def calculate_forward_nmse(self, dataset):
         """Calculate NMSE for forward model on given dataset.
-        PGJANET doesn't use memory taps, so no trimming is needed."""
+        Account for windowing - output is trimmed by seq_len-1 samples."""
         if not self.forward_model:
             raise ValueError("Model is not a forward model")
-        y_true = dataset.output_data
         y_pred = self.generate_model_output(dataset.input_data)
+        # Trim y_true to match windowed output (last seq_len-1 samples are used for windowing)
+        y_true = dataset.output_data[self.seq_len - 1:]
         nmse = 10 * np.log10(np.sum(np.abs(y_true - y_pred)**2) / np.sum(np.abs(y_true)**2))
         return nmse
+    
+    def make_windows_iq(self, x_complex, y_complex, T):
+        x_iq = np.stack([np.real(x_complex), np.imag(x_complex)], axis=-1).astype(np.float32)  # (N,2)
+        y_iq = np.stack([np.real(y_complex), np.imag(y_complex)], axis=-1).astype(np.float32)  # (N,2)
+
+        N = x_iq.shape[0]
+        if N < T:
+            return np.empty((0, T, 2), np.float32), np.empty((0, 2), np.float32)
+
+        starts = range(0, N-T+1, self.seq_stride)
+        X = np.stack([x_iq[i:i+T] for i in starts], axis=0)  # (N-T+1, T, 2)
+        Y = np.stack([y_iq[i+T-1] for i in starts], axis=0)  # (N-T+1, T, 2)
+        return X, Y
+    
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3):
+        """Train model and return the best model based on validation loss"""
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+        
+        train_losses = []
+        valid_losses = []
+        best_valid_loss = float('inf')
+        best_model_state = None
+        best_epoch = 0
+
+        # Create dataloaders
+        training_xfc, training_output_aligned = self.training_data(training_dataset)
+
+        validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
+
+        train_loader = self.build_dataloaders(training_xfc, training_output_aligned, shuffle=True)
+        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned, shuffle=False)
+        
+        for epoch in range(num_epochs):
+            self.nn_model.train()
+            running_train_loss = 0
+            running_valid_loss = 0
+            
+            for xb, yb in train_loader:
+                xb = xb.to(self.device)
+                yb = yb.to(self.device)
+                optimizer.zero_grad()
+                preds_seq = self.nn_model(xb)
+                pre_last = preds_seq[:,-1,:]
+                loss = criterion(pre_last, yb)
+                loss.backward()
+                optimizer.step()
+                running_train_loss += loss.item() * xb.size(0)
+                
+            train_loss = running_train_loss
+            
+            self.nn_model.eval()
+            with torch.no_grad():
+                for xb, yb in valid_loader:
+                    xb = xb.to(self.device)
+                    yb = yb.to(self.device)
+                    preds_seq = self.nn_model(xb)
+                    pre_last = preds_seq[:,-1,:]
+                    loss = criterion(pre_last, yb)
+                    running_valid_loss += loss.item() * xb.size(0)
+                
+            valid_loss = running_valid_loss
+            
+            train_losses.append(train_loss)
+            valid_losses.append(valid_loss)
+            
+            # Update learning rate based on validation loss
+            scheduler.step(valid_loss)
+            
+            # Save best model
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                best_model_state = copy.deepcopy(self.nn_model.state_dict())
+                best_epoch = epoch + 1
+            
+            if (epoch + 1) % 10 == 0:
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}")
+        
+        # Load best model
+        self.nn_model.load_state_dict(best_model_state)
+        print(f"\nBest model from epoch {best_epoch} with validation loss: {best_valid_loss:.4e}")
+        
+        return train_losses, valid_losses, best_epoch
 
 
 ##### PyTorch models #####
 
 class PGJANETNetwork(nn.Module):
-    """PGJANET recurrent cell for PA modeling with amplitude and phase gating.
-    
-    Based on OpenDPD's PGJANET architecture with gates conditioned on
-    amplitude and phase (cos/sin) components of the input signal.
-    """
     def __init__(self, hidden_size, output_size, bias=True):
-        super(PGJANETNetwork, self).__init__()
+        super().__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
-        self.bias = bias
 
-        # Amplitude and phase gates (input concatenated with hidden state)
-        self.W_a = nn.Linear(hidden_size + 1, hidden_size, bias=bias)   # Amplitude gate
-        self.W_p1 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)  # Cosine phase gate
-        self.W_p2 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)  # Sine phase gate
-        
-        # Processing gates
-        self.W_f = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)  # Forget gate
-        self.W_g = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)  # Candidate gate
-        
-        # Output projection
+        self.W_a  = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+        self.W_p1 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+        self.W_p2 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+
+        self.W_f = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)
+        self.W_g = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)
+
         self.W_o = nn.Linear(hidden_size, output_size, bias=bias)
-        
+
         self.reset_parameters()
 
-    def forward(self, x):
-        """Forward pass through PGJANET cell.
-        
-        Args:
-            x: Input tensor of shape (batch_size, 2) where last dim is [I, Q]
-            
-        Returns:
-            Tensor of shape (batch_size, output_size) with predictions
-        """
-        if x.ndim != 2 or x.size(-1) != 2:
-            raise ValueError(f"PGJANETNetwork expects x shaped (B, 2). Got {tuple(x.shape)}")
+    def forward(self, x, h_0=None):
+        # x: (B,T,2)
+        if x.ndim != 3 or x.size(-1) != 2:
+            raise ValueError(f"Expected x shaped (B,T,2). Got {tuple(x.shape)}")
 
-        batch_size = x.shape[0]
-        
-        # Initialize hidden state to zeros (stateless)
-        h = torch.zeros(batch_size, self.hidden_size, device=x.device, dtype=x.dtype)
-        
-        # Extract I and Q components
-        i_x = x[:, 0].unsqueeze(-1)  # (batch_size, 1)
-        q_x = x[:, 1].unsqueeze(-1)  # (batch_size, 1)
-        
-        # Calculate amplitude
-        amp_x = torch.sqrt(torch.clamp(i_x**2 + q_x**2, min=1e-12))
-        
-        # Calculate phase components
-        theta = torch.atan2(q_x, i_x)
-        cos_theta = torch.cos(theta)
-        sin_theta = torch.sin(theta)
+        B, T, _ = x.shape
 
-        # Concatenate hidden state with amplitude/phase features for gates
-        h_x = torch.cat([h, amp_x], dim=-1)        # (batch_size, hidden_size + 1)
-        h_cos = torch.cat([h, cos_theta], dim=-1)  # (batch_size, hidden_size + 1)
-        h_sin = torch.cat([h, sin_theta], dim=-1)  # (batch_size, hidden_size + 1)
+        if h_0 is None:
+            # mimic (num_layers, B, H)
+            h = torch.zeros(B, self.hidden_size, device=x.device, dtype=x.dtype)
+        else:
+            # accept (1,B,H) or (num_layers,B,H) -> use layer 0
+            h = h_0[0]
 
-        # Compute amplitude and phase gates
-        a_n = torch.tanh(self.W_a(h_x))
-        p1_n = torch.tanh(self.W_p1(h_cos))
-        p2_n = torch.tanh(self.W_p2(h_sin))
+        outputs = []
 
-        # Compute modulation signal u_n (element-wise product with complements)
-        u_n = a_n * p1_n * p2_n * (1 - a_n) * (1 - p1_n) * (1 - p2_n)
+        for t in range(T):
+            x_t = x[:, t, :]  # (B,2)
 
-        # Concatenate hidden state with modulation signal
-        h_u = torch.cat([h, u_n], dim=-1)  # (batch_size, 2*hidden_size)
+            i_x = x_t[:, 0].unsqueeze(-1)
+            q_x = x_t[:, 1].unsqueeze(-1)
 
-        # Compute forget and candidate gates
-        f_n = torch.sigmoid(self.W_f(h_u))
-        g_n = torch.tanh(self.W_g(h_u))
+            amp_x = torch.sqrt(torch.clamp(i_x**2 + q_x**2, min=1e-12))
+            theta = torch.atan2(q_x, i_x)
+            cos_theta = torch.cos(theta)
+            sin_theta = torch.sin(theta)
 
-        # Update hidden state (GRU-like update)
-        h = f_n * h + (1 - f_n) * g_n
-        
-        # Compute output
-        output = self.W_o(h)
-        
-        return output
-    
+            h_x   = torch.cat([h, amp_x], dim=-1)
+            h_cos = torch.cat([h, cos_theta], dim=-1)
+            h_sin = torch.cat([h, sin_theta], dim=-1)
+
+            a_n  = torch.tanh(self.W_a(h_x))
+            p1_n = torch.tanh(self.W_p1(h_cos))
+            p2_n = torch.tanh(self.W_p2(h_sin))
+
+            u_n = a_n * p1_n * p2_n * (1 - a_n) * (1 - p1_n) * (1 - p2_n)
+
+            h_u = torch.cat([h, u_n], dim=-1)
+
+            f_n = torch.sigmoid(self.W_f(h_u))
+            g_n = torch.tanh(self.W_g(h_u))
+
+            h = f_n * h + (1 - f_n) * g_n
+
+            y_t = self.W_o(h)         # (B,2)
+            outputs.append(y_t)
+
+        outputs = torch.stack(outputs, dim=1)  # (B,T,2)
+        return outputs
+
     def reset_parameters(self):
         for module in [self.W_a, self.W_p1, self.W_p2, self.W_f, self.W_g, self.W_o]:
-            if hasattr(module, 'weight'):
-                nn.init.xavier_uniform_(module.weight)
-            if hasattr(module, 'bias') and module.bias is not None:
-                nn.init.constant_(module.bias, 0)
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0.0)
 
 
 class OneLayerNetwork(nn.Module):
