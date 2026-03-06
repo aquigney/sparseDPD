@@ -413,10 +413,11 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
     
 
 class PGJANET_NeuralNetwork(NeuralNetwork):
-    def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False, batch_size=256, seq_len=None, seq_stride=None):
+    def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False, batch_size=256, seq_len=None, seq_stride=None, hidden_size =16):
         super().__init__(num_memory_levels, model_type, forward_model, batch_size=batch_size)
         self.seq_len = seq_len if seq_len is not None else num_memory_levels
         self.seq_stride = seq_stride if seq_stride is not None else 1
+        self.hidden_size = hidden_size
 
     def training_data(self, dataset):
         if self.forward_model:
@@ -432,9 +433,8 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         if model_type != 'PGJANETNetwork':
             print("Model type not recognized for PGJANET_NeuralNetwork")
             return None
-        hidden_size = 32
         output_size = 2
-        return PGJANETNetwork(hidden_size=hidden_size, output_size=output_size)
+        return PGJANETNetwork(hidden_size=self.hidden_size, output_size=output_size)
 
     def gen_input_feature(self, x, stride=None):
         return np.array([np.real(x), np.imag(x)]).T.astype(np.float32)

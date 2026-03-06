@@ -2,14 +2,11 @@ from .Experiment import Experiment
 import torch.nn as nn
 
 class LinearExperiment(Experiment):
-    def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset, use_frames=True, frame_stride=100, frame_length=500):
+    def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset):
         super().__init__(nn_model, training_dataset, valid_dataset, test_dataset)
         self.num_prune_iterations = num_prune_iterations
         self.prune_amount = prune_amount
         self.retrain_epochs = retrain_epochs
-        self.use_frames = use_frames
-        self.frame_stride = frame_stride
-        self.frame_length = frame_length
 
     def prune(self):
         nmse_results = []
@@ -45,9 +42,6 @@ class LinearExperiment(Experiment):
                 num_epochs=self.retrain_epochs,
                 training_dataset = self.training_dataset,
                 validation_dataset = self.valid_dataset,
-                use_frames = self.use_frames,
-                frame_stride = self.frame_stride,
-                frame_length = self.frame_length
             )
             
             # Store validation losses and best epoch
