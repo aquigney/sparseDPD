@@ -414,10 +414,10 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
 
 class PGJANET_NeuralNetwork(NeuralNetwork):
     def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False, batch_size=256, seq_len=None, seq_stride=None, hidden_size =16):
+        self.hidden_size = hidden_size  # Set this BEFORE super().__init__() because get_model() needs it
         super().__init__(num_memory_levels, model_type, forward_model, batch_size=batch_size)
         self.seq_len = seq_len if seq_len is not None else num_memory_levels
         self.seq_stride = seq_stride if seq_stride is not None else 1
-        self.hidden_size = hidden_size
 
     def training_data(self, dataset):
         if self.forward_model:
@@ -564,6 +564,25 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         print(f"\nBest model from epoch {best_epoch} with validation loss: {best_valid_loss:.4e}")
         
         return train_losses, valid_losses, best_epoch
+    
+    def _calculate_initial_valid_loss(self, validation_dataset):
+        # Calculate initial validation loss (for pruning experiments)
+        validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
+
+        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned, shuffle=False)
+        criterion = nn.MSELoss()
+        self.nn_model.eval()
+        with torch.no_grad():
+            initial_valid_loss = 0
+            for xb, yb in valid_loader:
+                xb = xb.to(self.device)
+                yb = yb.to(self.device)
+
+                preds_seq = self.nn_model(xb)
+                pre_last = preds_seq[:,-1,:]
+                loss = criterion(pre_last, yb)
+                initial_valid_loss += loss.item() * xb.size(0)
+        return initial_valid_loss
 
 
 ##### PyTorch models #####
