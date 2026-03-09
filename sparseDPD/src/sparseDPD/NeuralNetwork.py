@@ -13,40 +13,13 @@ import matplotlib.pyplot as plt
 import copy
 
 class NeuralNetwork:
-    def __init__(self, num_memory_levels, model_type='OneLayerNetwork', forward_model=False):
+    def __init__(self, num_memory_levels, model_type='OneLayerNetwork', forward_model=False, batch_size=256):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using {self.device} device")
         self.num_memory_levels = num_memory_levels
         self.nn_model = self.get_model(model_type).to(self.device)
         self.forward_model = forward_model  # True if forward model, False if inverse model
-
-    def get_model(self, model_type='OneLayerNetwork'):
-        """Return NN model instance"""
-        input_size = self.num_memory_levels * 4  # Real/Imaginary parts + A and A^3 features
-        if model_type == 'OneLayerNetwork':
-            hidden_size = 12
-            model = OneLayerNetwork(input_size=input_size, hidden_size=hidden_size)
-        elif model_type == 'OneLayerNetwork_Skip':
-            hidden_size = 12
-            model = OneLayerNetwork_Skip(input_size=input_size, hidden_size=hidden_size)
-        elif model_type == 'ThreeLayerNetwork':
-            hidden_size1 = 30
-            hidden_size2 = 15
-            model = ThreeLayerNetwork(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
-        elif model_type == 'ThreeLayerNetwork_Skip':
-            hidden_size1 = 30
-            hidden_size2 = 15
-            model = ThreeLayerNetwork_Skip(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
-        elif model_type == 'MultiLayerNetwork':
-            hidden_sizes = [64, 32, 32, 32, 32, 16, 8]
-            model = MultiLayerNetwork(input_size=input_size, hidden_sizes=hidden_sizes)
-        elif model_type == 'MultiLayerNetwork_Skip':
-            hidden_sizes = [64, 32, 32, 32, 32, 16, 8]
-            model = MultiLayerNetwork_Skip(input_size=input_size, hidden_sizes=hidden_sizes)
-        else:
-            print("Model type not recognized")
-            model = None
-        return model
+        self.batch_size = batch_size
     
     def training_data(self, dataset):
         """Get aligned training data for NN model"""
@@ -60,31 +33,19 @@ class NeuralNetwork:
         return training_xfc, training_output_aligned
  
     
-    def build_dataloaders(self, x, y, batch_size=256, shuffle=False):
+    def build_dataloaders(self, x, y, shuffle=False):
         """Build dataloaders for dataset"""
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)
         dataset = TensorDataset(X, Y)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=shuffle)
         return dataloader
 
-    def _align_loss_tensors(self, preds, targets):
-        """Align model predictions and targets before loss calculation.
-
-        Default behavior is sequence-to-sequence / direct element-wise loss.
-        Subclasses can override for model-specific training targets.
-        """
-        return preds, targets
-
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500, grad_clip_val=0.0, window_stride=1):
-        """Train model and return the best model based on validation loss.
-
-        Args:
-            grad_clip_val (float): max norm for gradient clipping; 0.0 disables clipping.
-        """
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3):
+        """Train model and return the best model based on validation loss"""
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6) #min_lr=1e-6?
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
         
         train_losses = []
         valid_losses = []
@@ -92,22 +53,14 @@ class NeuralNetwork:
         best_model_state = None
         best_epoch = 0
 
-        validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
-        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned, shuffle=False)
-
         # Create dataloaders
-        if not use_frames:
-            training_xfc, training_output_aligned = self.training_data(training_dataset)
-            train_loader = self.build_dataloaders(training_xfc, training_output_aligned, shuffle=True)
-            
-        else:
-            x_frames = self._get_frames(training_dataset.input_data, frame_length, frame_stride)
-            y_frames = self._get_frames(training_dataset.output_data, frame_length, frame_stride)
-            X, Y = self._precompute_iq_features(x_frames, y_frames, window_stride=window_stride)
-            train_ds = TensorDataset(X, Y)
-            train_loader = DataLoader(train_ds, batch_size=256, shuffle=True, pin_memory=True)
+        training_xfc, training_output_aligned = self.training_data(training_dataset)
+
+        validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
+
+        train_loader = self.build_dataloaders(training_xfc, training_output_aligned)
+        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned)
         
-        self.nn_model.to(self.device)
         for epoch in range(num_epochs):
             self.nn_model.train()
             running_train_loss = 0
@@ -118,21 +71,12 @@ class NeuralNetwork:
                 yb = yb.to(self.device)
                 optimizer.zero_grad()
                 preds = self.nn_model(xb)
-                loss_preds, loss_targets = self._align_loss_tensors(preds, yb)
-                loss = criterion(loss_preds, loss_targets)
+                loss = criterion(preds, yb)
                 loss.backward()
-                # Optional gradient clipping
-                if grad_clip_val and grad_clip_val > 0.0:
-                    nn.utils.clip_grad_norm_(self.nn_model.parameters(), grad_clip_val)
                 optimizer.step()
                 running_train_loss += loss.item() * xb.size(0)
-
-            # Average epoch training loss
-            try:
-                n_train_samples = len(train_loader.dataset)
-                train_loss = running_train_loss / float(n_train_samples)
-            except Exception:
-                train_loss = running_train_loss
+                
+            train_loss = running_train_loss
             
             self.nn_model.eval()
             with torch.no_grad():
@@ -140,16 +84,10 @@ class NeuralNetwork:
                     xb = xb.to(self.device)
                     yb = yb.to(self.device)
                     preds = self.nn_model(xb)
-                    loss_preds, loss_targets = self._align_loss_tensors(preds, yb)
-                    loss = criterion(loss_preds, loss_targets)
+                    loss = criterion(preds, yb)
                     running_valid_loss += loss.item() * xb.size(0)
-
-            # Average validation loss
-            try:
-                n_valid_samples = len(valid_loader.dataset)
-                valid_loss = running_valid_loss / float(n_valid_samples)
-            except Exception:
-                valid_loss = running_valid_loss
+                
+            valid_loss = running_valid_loss
             
             train_losses.append(train_loss)
             valid_losses.append(valid_loss)
@@ -237,9 +175,9 @@ class NeuralNetwork:
             for xb, yb in valid_loader:
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
+
                 preds = self.nn_model(xb)
-                loss_preds, loss_targets = self._align_loss_tensors(preds, yb)
-                loss = criterion(loss_preds, loss_targets)
+                loss = criterion(preds, yb)
                 initial_valid_loss += loss.item() * xb.size(0)
         return initial_valid_loss
 
@@ -335,50 +273,68 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         self.model_type = model_type
         self.forward_model = forward_model
 
+    def get_model(self, model_type='OneLayerNetwork'):
+        """Return NN model instance"""
+        input_size = self.num_memory_levels * 4 -2  # Real/Imaginary parts + A and A^3 features
+        if model_type == 'OneLayerNetwork':
+            hidden_size = 12
+            model = OneLayerNetwork(input_size=input_size, hidden_size=hidden_size)
+        elif model_type == 'OneLayerNetwork_Skip':
+            hidden_size = 12
+            model = OneLayerNetwork_Skip(input_size=input_size, hidden_size=hidden_size)
+        elif model_type == 'ThreeLayerNetwork':
+            hidden_size1 = 30
+            hidden_size2 = 15
+            model = ThreeLayerNetwork(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
+        elif model_type == 'ThreeLayerNetwork_Skip':
+            hidden_size1 = 30
+            hidden_size2 = 15
+            model = ThreeLayerNetwork_Skip(input_size=input_size, hidden_size1=hidden_size1, hidden_size2=hidden_size2)
+        elif model_type == 'MultiLayerNetwork':
+            hidden_sizes = [64, 32, 32, 32, 32, 16, 8]
+            model = MultiLayerNetwork(input_size=input_size, hidden_sizes=hidden_sizes)
+        elif model_type == 'MultiLayerNetwork_Skip':
+            hidden_sizes = [64, 32, 32, 32, 32, 16, 8]
+            model = MultiLayerNetwork_Skip(input_size=input_size, hidden_sizes=hidden_sizes)
+        else:
+            print("Model type not recognized")
+            model = None
+        return model
+    
     def gen_input_feature(self, x):
         """Generates features from input signal for NN model"""
-        x = np.asarray(x)
-        N = x.shape[0]
-        M = int(self.num_memory_levels)
-        if N < M:
-            # no valid samples
-            return np.empty((0, 4 * M), dtype=np.float32)
 
-        # sliding windows of length M: windows[i] = [x[i], ..., x[i+M-1]]
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            windows = sliding_window_view(x, window_shape=M)
-        except Exception:
-            # Fallback: construct with a simple stack (less efficient)
-            windows = np.stack([x[i:N - M + i + 1] for i in range(M)], axis=1)
+        num_points = len(x)
+        phase = Dataset.conj_phase(x) #conj
+        I = np.real(x)
+        Q = np.imag(x)
 
-        # Original behavior aligned features with outputs starting at index self.num_memory_levels
-        # windows shape is (N-M+1, M) corresponding to end indices (M-1 .. N-1).
-        # To match previous code (which started at n = M .. N-1) we skip the first window.
-        windows = windows[1:]
+        phase_norm_data = np.zeros((num_points, self.num_memory_levels), dtype=complex)
 
-        # Each row corresponds to time index n = M .. (N-1); taps ordered current..past
-        taps = windows[:, ::-1]
+        for n in range(self.num_memory_levels, num_points):
+            for m in range(self.num_memory_levels): 
+                phase_norm_data[n, m] = x[n - m] * phase[n]
+                
 
-        # phase at each output time = conj_phase(x)[M:]
-        phase = Dataset.conj_phase(x)[M:]
+        Ax = np.sqrt(I**2 + Q**2)
+        A_feats = np.zeros((num_points, self.num_memory_levels))
+        for n in range(self.num_memory_levels, num_points):
+            for m in range(self.num_memory_levels):
+                A_feats[n, m] = Ax[n - m]
 
-        # apply phase normalization per-row
-        pn = taps * phase[:, None]
+        # Trim first num_memory_levels rows
+        phase_norm_data = phase_norm_data[self.num_memory_levels:, :]
+        A_feats = A_feats[self.num_memory_levels:, :]
+        A3_feats = A_feats**3
 
-        A = np.abs(taps)
-        A3 = A ** 3
-
-        # Build features following previous layout
-        real_pn = np.real(pn)               # (N-M+1, M)
-        imag_pn = np.imag(pn)               # (N-M+1, M)
-        A_taps = A                          # (N-M+1, M)
+        imag_pn = np.imag(phase_norm_data)[:, 1:]   # drop imag of current tap (m=0)
+        A_taps  = A_feats[:, 1:]                   # drop A of current tap (m=0), keep tapped A only
 
         xfc = np.hstack([
-            real_pn,
-            imag_pn,
-            A_taps,
-            A3
+            np.real(phase_norm_data),   # M
+            imag_pn,                    # M-1
+            A_taps,                     # M-1   <-- changed
+            A3_feats,                   # M
         ]).astype(np.float32)
 
         return xfc
@@ -389,58 +345,6 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         y_norm = y_norm[self.num_memory_levels:]
         return np.array([np.real(y_norm), np.imag(y_norm)]).T.astype(np.float32)
     
-    @staticmethod
-    def _get_frames(sequence, frame_length, stride):
-        """Extract frames from sequence"""
-        n = len(sequence)
-        n_frames = (n - frame_length) // stride + 1
-        return np.stack([sequence[i*stride:i*stride+frame_length] for i in range(n_frames)])
-    
-    def _precompute_iq_features(self, x_frames, y_frames, window_stride=1):
-        """Precompute IQ frame features and targets"""
-        window_stride = max(1, int(window_stride))
-        n_frames = x_frames.shape[0]
-        valid_t0 = self.num_memory_levels - 1
-        n_valid = x_frames.shape[1] - valid_t0
-        n_valid = (n_valid + window_stride - 1) // window_stride if n_valid > 0 else 0
-        total = n_frames * n_valid
-        feat_dim = 4 * self.num_memory_levels 
-
-        if total == 0:
-            return torch.empty((0, feat_dim), dtype=torch.float32), torch.empty((0, 2), dtype=torch.float32)
-
-        # Vectorized extraction: build sliding windows
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            windows = sliding_window_view(x_frames, window_shape=self.num_memory_levels, axis=1)
-        except Exception:
-            windows = np.stack([x_frames[:, i:i + n_valid] for i in range(self.num_memory_levels)], axis=2)
-
-        windows = windows[:, ::window_stride, :]
-
-        taps = windows[:, :, ::-1]
-        c = np.exp(-1j * np.angle(taps[:, :, 0]))
-
-        pn = taps * c[:, :, None]
-        A = np.abs(taps)
-        A3 = A ** 3
-
-        real_pn = np.real(pn).reshape(total, self.num_memory_levels)
-        imag_pn = np.imag(pn).reshape(total, self.num_memory_levels)
-        A_taps = A.reshape(total, self.num_memory_levels)
-        A3_r = A3.reshape(total, self.num_memory_levels)
-
-        Xfc = np.hstack([real_pn, imag_pn, A_taps, A3_r]).astype(np.float32)
-
-        y_curr = y_frames[:, valid_t0::window_stride].reshape(total)
-        c_flat = c.reshape(total)
-        y_norm = y_curr * c_flat
-
-        Yout = np.empty((total, 2), dtype=np.float32)
-        Yout[:, 0] = np.real(y_norm).astype(np.float32)
-        Yout[:, 1] = np.imag(y_norm).astype(np.float32)
-
-        return torch.from_numpy(Xfc), torch.from_numpy(Yout)
     
 
 class ARVTDNN_NeuralNetwork(NeuralNetwork):
@@ -506,317 +410,255 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         n_frames = (n - frame_length) // stride + 1
         return np.stack([sequence[i*stride:i*stride+frame_length] for i in range(n_frames)])
     
-    def _precompute_iq_features(self, x_frames, y_frames, window_stride=1):
-        """Precompute IQ frame features and targets (without phase normalization)"""
-        window_stride = max(1, int(window_stride))
-        n_frames = x_frames.shape[0]
-        n_valid = x_frames.shape[1] - self.num_memory_levels
-        n_valid = (n_valid + window_stride - 1) // window_stride if n_valid > 0 else 0
-        total = n_frames * n_valid
-        feat_dim = 4 * self.num_memory_levels
-
-        if total == 0:
-            return torch.empty((0, feat_dim), dtype=torch.float32), torch.empty((0, 2), dtype=torch.float32)
-
-        # Vectorized extraction: build sliding windows
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            windows = sliding_window_view(x_frames, window_shape=self.num_memory_levels, axis=1)
-        except Exception:
-            windows = np.stack([x_frames[:, i:i + n_valid + 1] for i in range(self.num_memory_levels)], axis=2)
-
-        # Skip the first window, same as gen_input_feature does (windows = windows[1:])
-        windows = windows[:, 1::window_stride, :]
-        
-        taps = windows[:, :, ::-1]
-        A = np.abs(taps)
-        A3 = A ** 3
-
-        real_taps = np.real(taps).reshape(total, self.num_memory_levels)
-        imag_taps = np.imag(taps).reshape(total, self.num_memory_levels)
-        A_taps = A.reshape(total, self.num_memory_levels)
-        A3_r = A3.reshape(total, self.num_memory_levels)
-
-        Xfc = np.hstack([real_taps, imag_taps, A_taps, A3_r]).astype(np.float32)
-
-        # Slice output to match the skipped first window (same as gen_output_feature: y[self.num_memory_levels:])
-        y_curr = y_frames[:, self.num_memory_levels::window_stride].reshape(total)
-
-        Yout = np.empty((total, 2), dtype=np.float32)
-        Yout[:, 0] = np.real(y_curr).astype(np.float32)
-        Yout[:, 1] = np.imag(y_curr).astype(np.float32)
-
-        return torch.from_numpy(Xfc), torch.from_numpy(Yout)
     
 
 class PGJANET_NeuralNetwork(NeuralNetwork):
-    """PGJANET recurrent network wrapper using sequence IQ features."""
-    def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False):
-        # For PGJANET, num_memory_levels acts as the sequence length
-        super().__init__(num_memory_levels, model_type, forward_model)
+    def __init__(self, num_memory_levels, model_type='PGJANETNetwork', forward_model=False, batch_size=256, seq_len=None, seq_stride=None, hidden_size =16):
+        self.hidden_size = hidden_size  # Set this BEFORE super().__init__() because get_model() needs it
+        super().__init__(num_memory_levels, model_type, forward_model, batch_size=batch_size)
+        self.seq_len = seq_len if seq_len is not None else num_memory_levels
+        self.seq_stride = seq_stride if seq_stride is not None else 1
 
+    def training_data(self, dataset):
+        if self.forward_model:
+            x_in, y_out = dataset.input_data, dataset.output_data
+        else:
+            y_out, x_in = dataset.input_data, dataset.output_data
+
+        X, Y_last = self.make_windows_iq(x_in, y_out, self.seq_len)
+        return X, Y_last
+    
     def get_model(self, model_type='PGJANETNetwork'):
         """Return PGJANET model instance."""
         if model_type != 'PGJANETNetwork':
             print("Model type not recognized for PGJANET_NeuralNetwork")
             return None
-        hidden_size = 15
         output_size = 2
-        return PGJANETNetwork(hidden_size=hidden_size, output_size=output_size)
+        return PGJANETNetwork(hidden_size=self.hidden_size, output_size=output_size)
 
-    def gen_input_feature(self, x):
-        """Generate sequence IQ features shaped (N_valid, seq_len, 2).
-        
-        Args:
-            x: Complex input array of shape (N,)
-            
-        Returns:
-            Array of shape (N_valid, M, 2) where M is num_memory_levels (sequence length)
-        """
-        x = np.asarray(x)
-        N = x.shape[0]
-        M = int(self.num_memory_levels)
-
-        if N < M:
-            return np.empty((0, M, 2), dtype=np.float32)
-
-        # Create sliding windows of IQ samples
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            windows = sliding_window_view(x, window_shape=M)
-        except Exception:
-            windows = np.stack([x[i:N - M + i + 1] for i in range(M)], axis=1)
-
-        # Skip first window to align with output (like other implementations)
-        windows = windows[1:]  # Shape: (N-M, M)
-
-        # Convert to IQ format: (N_valid, M, 2)
-        x_seq = np.empty((windows.shape[0], M, 2), dtype=np.float32)
-        x_seq[:, :, 0] = np.real(windows).astype(np.float32)  # I component
-        x_seq[:, :, 1] = np.imag(windows).astype(np.float32)  # Q component
-        
-        return x_seq
-
-    def gen_output_feature(self, x, y):
-        """Generate aligned sequence output targets shaped (N_valid, seq_len, 2).
-        
-        For sequence-to-sequence training, returns all timesteps.
-        
-        Args:
-            x: Complex input array (for alignment)
-            y: Complex output array
-            
-        Returns:
-            Array of shape (N_valid, M, 2) for sequence-to-sequence training
-        """
-        y = np.asarray(y)
-        N = y.shape[0]
-        M = int(self.num_memory_levels)
-
-        if N < M:
-            return np.empty((0, M, 2), dtype=np.float32)
-
-        # Create sliding windows for output
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            y_windows = sliding_window_view(y, window_shape=M)
-        except Exception:
-            y_windows = np.stack([y[i:N - M + i + 1] for i in range(M)], axis=1)
-
-        # Skip first window to align with input
-        y_windows = y_windows[1:]  # Shape: (N-M, M)
-
-        # Convert to IQ format for all timesteps: (N_valid, M, 2)
-        y_seq = np.empty((y_windows.shape[0], M, 2), dtype=np.float32)
-        y_seq[:, :, 0] = np.real(y_windows).astype(np.float32)
-        y_seq[:, :, 1] = np.imag(y_windows).astype(np.float32)
-        
-        return y_seq
-
-    @staticmethod
-    def _get_frames(sequence, frame_length, stride):
-        """Extract overlapping frames from a 1D sequence."""
-        n = len(sequence)
-        if n < frame_length:
-            return np.empty((0, frame_length), dtype=np.asarray(sequence).dtype)
-        n_frames = (n - frame_length) // stride + 1
-        return np.stack([sequence[i * stride:i * stride + frame_length] for i in range(n_frames)])
-
-    def _precompute_iq_features(self, x_frames, y_frames, window_stride=1):
-        """Precompute PGJANET framed sequence features and targets.
-
-        Returns:
-            X: (total_windows, M, 2)
-            Y: (total_windows, M, 2)
-        """
-        window_stride = max(1, int(window_stride))
-        n_frames = x_frames.shape[0]
-        M = int(self.num_memory_levels)
-
-        if n_frames == 0 or x_frames.shape[1] < M + 1:
-            return torch.empty((0, M, 2), dtype=torch.float32), torch.empty((0, M, 2), dtype=torch.float32)
-
-        try:
-            from numpy.lib.stride_tricks import sliding_window_view
-            x_windows = sliding_window_view(x_frames, window_shape=M, axis=1)
-            y_windows = sliding_window_view(y_frames, window_shape=M, axis=1)
-        except Exception:
-            n_valid_full = x_frames.shape[1] - M + 1
-            x_windows = np.stack([x_frames[:, i:i + n_valid_full] for i in range(M)], axis=2)
-            y_windows = np.stack([y_frames[:, i:i + n_valid_full] for i in range(M)], axis=2)
-
-        # Match gen_input_feature/gen_output_feature alignment: skip first window
-        x_windows = x_windows[:, 1::window_stride, :]
-        y_windows = y_windows[:, 1::window_stride, :]
-
-        if x_windows.shape[1] == 0:
-            return torch.empty((0, M, 2), dtype=torch.float32), torch.empty((0, M, 2), dtype=torch.float32)
-
-        total = n_frames * x_windows.shape[1]
-
-        X = np.empty((total, M, 2), dtype=np.float32)
-        X[:, :, 0] = np.real(x_windows).reshape(total, M).astype(np.float32)
-        X[:, :, 1] = np.imag(x_windows).reshape(total, M).astype(np.float32)
-
-        Y = np.empty((total, M, 2), dtype=np.float32)
-        Y[:, :, 0] = np.real(y_windows).reshape(total, M).astype(np.float32)
-        Y[:, :, 1] = np.imag(y_windows).reshape(total, M).astype(np.float32)
-
-        return torch.from_numpy(X), torch.from_numpy(Y)
-
+    def gen_input_feature(self, x, stride=None):
+        return np.array([np.real(x), np.imag(x)]).T.astype(np.float32)
+    
     def generate_model_output(self, x):
-        """Generate unnormalized output using sequence-to-sequence predictions.
-        
-        For inference, we extract the last timestep from each sequence prediction.
-        """
+        """Generate output for given input x using trained NN model with windowing."""
         self.nn_model.eval()
         with torch.no_grad():
-            xseq = self.gen_input_feature(x)  # (N_valid, M, 2)
-            X = torch.tensor(xseq, dtype=torch.float32).to(self.device)
-            preds = self.nn_model(X).detach().cpu().numpy()  # (N_valid, M, 2)
-            # Use last timestep for inference alignment
-            preds_last = preds[:, -1, :]  # (N_valid, 2)
+            # Create windows - only need input windows for prediction
+            x_iq = np.stack([np.real(x), np.imag(x)], axis=-1).astype(np.float32)  # (N,2)
+            N = x_iq.shape[0]
+            T = self.seq_len
+            
+            if N < T:
+                return np.array([], dtype=np.complex128)
+            
+            # Create input windows (N-T+1, T, 2)
+            X_windows = np.stack([x_iq[i:i+T] for i in range(N - T + 1)], axis=0)
+            X = torch.tensor(X_windows, dtype=torch.float32).to(self.device)
+            preds = self.nn_model(X).detach().cpu().numpy()  # (N-T+1, T, 2)
+            
+            # Extract last timestep only (many-to-one prediction)
+            preds = preds[:, -1, :]  # (N-T+1, 2)
+        
+        # Reconstruct complex output
+        y_pred = preds[:, 0] + 1j * preds[:, 1]
+        return y_pred
+        
+    
+    def gen_output_feature(self, x, y):
+        """Generates features from output signal for NN model"""
+        return np.array([np.real(y), np.imag(y)]).T.astype(np.float32)
 
-        return preds_last[:, 0] + 1j * preds_last[:, 1]
+    
+    def calculate_forward_nmse(self, dataset):
+        """Calculate NMSE for forward model on given dataset.
+        Account for windowing - output is trimmed by seq_len-1 samples."""
+        if not self.forward_model:
+            raise ValueError("Model is not a forward model")
+        y_pred = self.generate_model_output(dataset.input_data)
+        # Trim y_true to match windowed output (last seq_len-1 samples are used for windowing)
+        y_true = dataset.output_data[self.seq_len - 1:]
+        nmse = 10 * np.log10(np.sum(np.abs(y_true - y_pred)**2) / np.sum(np.abs(y_true)**2))
+        return nmse
+    
+    def make_windows_iq(self, x_complex, y_complex, T):
+        x_iq = np.stack([np.real(x_complex), np.imag(x_complex)], axis=-1).astype(np.float32)  # (N,2)
+        y_iq = np.stack([np.real(y_complex), np.imag(y_complex)], axis=-1).astype(np.float32)  # (N,2)
 
-    def _align_loss_tensors(self, preds, targets):
-        """Many-to-one training for PGJANET: compute loss on last timestep only."""
-        if preds.ndim == 3 and targets.ndim == 3:
-            return preds[:, -1, :], targets[:, -1, :]
-        return preds, targets
+        N = x_iq.shape[0]
+        if N < T:
+            return np.empty((0, T, 2), np.float32), np.empty((0, 2), np.float32)
+
+        starts = range(0, N-T+1, self.seq_stride)
+        X = np.stack([x_iq[i:i+T] for i in starts], axis=0)  # (N-T+1, T, 2)
+        Y = np.stack([y_iq[i+T-1] for i in starts], axis=0)  # (N-T+1, T, 2)
+        return X, Y
+    
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3):
+        """Train model and return the best model based on validation loss"""
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+        
+        train_losses = []
+        valid_losses = []
+        best_valid_loss = float('inf')
+        best_model_state = None
+        best_epoch = 0
+
+        # Create dataloaders
+        training_xfc, training_output_aligned = self.training_data(training_dataset)
+
+        validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
+
+        train_loader = self.build_dataloaders(training_xfc, training_output_aligned, shuffle=True)
+        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned, shuffle=False)
+        
+        for epoch in range(num_epochs):
+            self.nn_model.train()
+            running_train_loss = 0
+            running_valid_loss = 0
+            
+            for xb, yb in train_loader:
+                xb = xb.to(self.device)
+                yb = yb.to(self.device)
+                optimizer.zero_grad()
+                preds_seq = self.nn_model(xb)
+                pre_last = preds_seq[:,-1,:]
+                loss = criterion(pre_last, yb)
+                loss.backward()
+                optimizer.step()
+                running_train_loss += loss.item() * xb.size(0)
+                
+            train_loss = running_train_loss
+            
+            self.nn_model.eval()
+            with torch.no_grad():
+                for xb, yb in valid_loader:
+                    xb = xb.to(self.device)
+                    yb = yb.to(self.device)
+                    preds_seq = self.nn_model(xb)
+                    pre_last = preds_seq[:,-1,:]
+                    loss = criterion(pre_last, yb)
+                    running_valid_loss += loss.item() * xb.size(0)
+                
+            valid_loss = running_valid_loss
+            
+            train_losses.append(train_loss)
+            valid_losses.append(valid_loss)
+            
+            # Update learning rate based on validation loss
+            scheduler.step(valid_loss)
+            
+            # Save best model
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                best_model_state = copy.deepcopy(self.nn_model.state_dict())
+                best_epoch = epoch + 1
+            
+            if (epoch + 1) % 10 == 0:
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}")
+        
+        # Load best model
+        self.nn_model.load_state_dict(best_model_state)
+        print(f"\nBest model from epoch {best_epoch} with validation loss: {best_valid_loss:.4e}")
+        
+        return train_losses, valid_losses, best_epoch
+    
+    def _calculate_initial_valid_loss(self, validation_dataset):
+        # Calculate initial validation loss (for pruning experiments)
+        validation_xfc, validation_output_aligned = self.training_data(validation_dataset)
+
+        valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned, shuffle=False)
+        criterion = nn.MSELoss()
+        self.nn_model.eval()
+        with torch.no_grad():
+            initial_valid_loss = 0
+            for xb, yb in valid_loader:
+                xb = xb.to(self.device)
+                yb = yb.to(self.device)
+
+                preds_seq = self.nn_model(xb)
+                pre_last = preds_seq[:,-1,:]
+                loss = criterion(pre_last, yb)
+                initial_valid_loss += loss.item() * xb.size(0)
+        return initial_valid_loss
 
 
 ##### PyTorch models #####
 
 class PGJANETNetwork(nn.Module):
-    """PGJANET recurrent cell for PA modeling with amplitude and phase gating.
-    
-    Based on OpenDPD's PGJANET architecture with gates conditioned on
-    amplitude and phase (cos/sin) components of the input signal.
-    """
     def __init__(self, hidden_size, output_size, bias=True):
-        super(PGJANETNetwork, self).__init__()
+        super().__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
-        self.bias = bias
 
-        # Amplitude and phase gates (input concatenated with hidden state)
-        self.W_a = nn.Linear(hidden_size + 1, hidden_size, bias=bias)   # Amplitude gate
-        self.W_p1 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)  # Cosine phase gate
-        self.W_p2 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)  # Sine phase gate
-        
-        # Processing gates
-        self.W_f = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)  # Forget gate
-        self.W_g = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)  # Candidate gate
-        
-        # Output projection
+        self.W_a  = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+        self.W_p1 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+        self.W_p2 = nn.Linear(hidden_size + 1, hidden_size, bias=bias)
+
+        self.W_f = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)
+        self.W_g = nn.Linear(hidden_size + hidden_size, hidden_size, bias=bias)
+
         self.W_o = nn.Linear(hidden_size, output_size, bias=bias)
-        
+
         self.reset_parameters()
 
     def forward(self, x, h_0=None):
-        """Forward pass through PGJANET cell.
-        
-        Args:
-            x: Input tensor of shape (batch_size, seq_len, 2) where last dim is [I, Q]
-            h_0: Initial hidden state (optional)
-            
-        Returns:
-            Tensor of shape (batch_size, seq_len, output_size) with predictions for all timesteps
-        """
+        # x: (B,T,2)
         if x.ndim != 3 or x.size(-1) != 2:
-            raise ValueError(f"PGJANETNetwork expects x shaped (B,T,2). Got {tuple(x.shape)}")
+            raise ValueError(f"Expected x shaped (B,T,2). Got {tuple(x.shape)}")
 
-        batch_size, seq_len, _ = x.shape
-        
-        # Initialize hidden state
+        B, T, _ = x.shape
+
         if h_0 is None:
-            h = torch.zeros(batch_size, self.hidden_size, device=x.device, dtype=x.dtype)
+            # mimic (num_layers, B, H)
+            h = torch.zeros(B, self.hidden_size, device=x.device, dtype=x.dtype)
         else:
-            if h_0.ndim == 3:
-                h = h_0[0]  # Take first layer if multi-layer format
-            elif h_0.ndim == 2:
-                h = h_0
-            else:
-                raise ValueError(f"h_0 must have shape (B,H) or (L,B,H). Got {tuple(h_0.shape)}")
+            # accept (1,B,H) or (num_layers,B,H) -> use layer 0
+            h = h_0[0]
 
         outputs = []
-        
-        # Process sequence timestep by timestep
-        for t in range(seq_len):
-            x_t = x[:, t, :]  # (batch_size, 2)
-            
-            # Extract I and Q components
-            i_x = x_t[:, 0].unsqueeze(-1)  # (batch_size, 1)
-            q_x = x_t[:, 1].unsqueeze(-1)  # (batch_size, 1)
-            
-            # Calculate amplitude
+
+        for t in range(T):
+            x_t = x[:, t, :]  # (B,2)
+
+            i_x = x_t[:, 0].unsqueeze(-1)
+            q_x = x_t[:, 1].unsqueeze(-1)
+
             amp_x = torch.sqrt(torch.clamp(i_x**2 + q_x**2, min=1e-12))
-            
-            # Calculate phase components
             theta = torch.atan2(q_x, i_x)
             cos_theta = torch.cos(theta)
             sin_theta = torch.sin(theta)
 
-            # Concatenate hidden state with amplitude/phase features for gates
-            h_x = torch.cat([h, amp_x], dim=-1)        # (batch_size, hidden_size + 1)
-            h_cos = torch.cat([h, cos_theta], dim=-1)  # (batch_size, hidden_size + 1)
-            h_sin = torch.cat([h, sin_theta], dim=-1)  # (batch_size, hidden_size + 1)
+            h_x   = torch.cat([h, amp_x], dim=-1)
+            h_cos = torch.cat([h, cos_theta], dim=-1)
+            h_sin = torch.cat([h, sin_theta], dim=-1)
 
-            # Compute amplitude and phase gates
-            a_n = torch.tanh(self.W_a(h_x))
+            a_n  = torch.tanh(self.W_a(h_x))
             p1_n = torch.tanh(self.W_p1(h_cos))
             p2_n = torch.tanh(self.W_p2(h_sin))
 
-            # Compute modulation signal u_n (element-wise product with complements)
             u_n = a_n * p1_n * p2_n * (1 - a_n) * (1 - p1_n) * (1 - p2_n)
 
-            # Concatenate hidden state with modulation signal
-            h_u = torch.cat([h, u_n], dim=-1)  # (batch_size, 2*hidden_size)
+            h_u = torch.cat([h, u_n], dim=-1)
 
-            # Compute forget and candidate gates
             f_n = torch.sigmoid(self.W_f(h_u))
             g_n = torch.tanh(self.W_g(h_u))
 
-            # Update hidden state (GRU-like update)
             h = f_n * h + (1 - f_n) * g_n
-            
-            # Compute output for this timestep
-            y_n = self.W_o(h)
-            outputs.append(y_n)
 
-        # Stack outputs to get (batch_size, seq_len, output_size)
-        outputs = torch.stack(outputs, dim=1)
-        
+            y_t = self.W_o(h)         # (B,2)
+            outputs.append(y_t)
+
+        outputs = torch.stack(outputs, dim=1)  # (B,T,2)
         return outputs
-    
+
     def reset_parameters(self):
-        """Initialize network parameters using Xavier uniform initialization."""
         for module in [self.W_a, self.W_p1, self.W_p2, self.W_f, self.W_g, self.W_o]:
-            if hasattr(module, 'weight'):
-                nn.init.xavier_uniform_(module.weight)
-            if hasattr(module, 'bias') and module.bias is not None:
-                nn.init.constant_(module.bias, 0)
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0.0)
 
 
 class OneLayerNetwork(nn.Module):

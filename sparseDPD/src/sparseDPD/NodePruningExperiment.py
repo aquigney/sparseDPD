@@ -15,17 +15,13 @@ class NodePruningExperiment(Experiment):
         training_dataset,
         valid_dataset,
         test_dataset,
-        use_frames=True,
-        frame_stride=100,
-        frame_length=500,
+        learning_rate=1e-4  # Lower default learning rate for fine-tuning after pruning
     ):
         super().__init__(nn_model, training_dataset, valid_dataset, test_dataset)
         self.num_prune_iterations = num_prune_iterations
         self.prune_amount = prune_amount
         self.retrain_epochs = retrain_epochs
-        self.use_frames = use_frames
-        self.frame_stride = frame_stride
-        self.frame_length = frame_length
+        self.learning_rate = learning_rate
 
     def prune(self):
         nmse_results = []
@@ -33,6 +29,8 @@ class NodePruningExperiment(Experiment):
         valid_losses_final = []
         all_valid_losses = []
         all_best_epochs = []
+
+
 
         for i in range(self.num_prune_iterations):
             print(f"\n{'='*60}")
@@ -50,10 +48,7 @@ class NodePruningExperiment(Experiment):
             train_losses, valid_losses, best_epoch = self.nn_model_copy.get_best_model(
                 num_epochs=self.retrain_epochs,
                 training_dataset=self.training_dataset,
-                validation_dataset=self.valid_dataset,
-                use_frames=self.use_frames,
-                frame_stride=self.frame_stride,
-                frame_length=self.frame_length,
+                validation_dataset=self.valid_dataset
             )
 
             all_valid_losses.append(valid_losses)
@@ -77,7 +72,7 @@ class NodePruningExperiment(Experiment):
         hidden_layers = linear_layers[:-1]
 
         candidates = []
-        for layer in hidden_layers:
+        for layer_idx, layer in enumerate(hidden_layers):
             if not hasattr(layer, "weight_mask"):
                 prune.custom_from_mask(layer, name="weight", mask=torch.ones_like(layer.weight))
             if layer.bias is not None and not hasattr(layer, "bias_mask"):
@@ -85,18 +80,36 @@ class NodePruningExperiment(Experiment):
 
             weight_mask = layer.weight_mask.detach().clone()
             bias_mask = layer.bias_mask.detach().clone() if layer.bias is not None else None
+            
+            # Get next layer to check output connections
+            next_layer = linear_layers[layer_idx + 1] if layer_idx + 1 < len(linear_layers) else None
+            if next_layer is not None and not hasattr(next_layer, "weight_mask"):
+                prune.custom_from_mask(next_layer, name="weight", mask=torch.ones_like(next_layer.weight))
 
             for node_idx in range(layer.out_features):
+                # Check if node's output weights are active
                 row_active = weight_mask[node_idx].sum() > 0
-                bias_active = (bias_mask[node_idx] > 0) if bias_mask is not None else False
-                if not (row_active or bias_active):
+                if not row_active:
                     continue
-
-                weight_score = (layer.weight.detach()[node_idx].abs() * weight_mask[node_idx]).sum()
+                
+                # Check if node's output connections to next layer are active
+                if next_layer is not None:
+                    next_layer_connections = next_layer.weight_mask[:, node_idx].sum()
+                    if next_layer_connections == 0:
+                        # This node has no active output connections, skip it
+                        continue
+                
+                # Calculate importance based on both magnitude and number of active connections
+                # Use L2 norm for better importance estimation
+                active_weights = layer.weight.detach()[node_idx] * weight_mask[node_idx]
+                weight_score = (active_weights ** 2).sum().sqrt()  # L2 norm
+                
                 bias_score = 0.0
-                if bias_mask is not None:
-                    bias_score = (layer.bias.detach()[node_idx].abs() * bias_mask[node_idx]).item()
-                node_score = weight_score.item() + float(bias_score)
+                if bias_mask is not None and bias_mask[node_idx] > 0:
+                    bias_score = layer.bias.detach()[node_idx].abs().item()
+                
+                # Combine weight and bias importance
+                node_score = weight_score.item() + bias_score
 
                 candidates.append((node_score, layer, node_idx))
 
@@ -110,9 +123,33 @@ class NodePruningExperiment(Experiment):
         num_to_prune = min(num_to_prune, len(candidates))
 
         weakest = sorted(candidates, key=lambda x: x[0])[:num_to_prune]
+        
+        # Group pruned nodes by layer for efficient processing
+        layer_to_nodes = {}
         for _, layer, node_idx in weakest:
-            layer.weight_mask.data[node_idx, :] = 0
-            if layer.bias is not None and hasattr(layer, "bias_mask"):
-                layer.bias_mask.data[node_idx] = 0
+            if layer not in layer_to_nodes:
+                layer_to_nodes[layer] = []
+            layer_to_nodes[layer].append(node_idx)
+        
+        # Prune nodes and their connections to the next layer
+        for layer, node_indices in layer_to_nodes.items():
+            # Zero out output weights and bias of pruned nodes
+            for node_idx in node_indices:
+                layer.weight_mask.data[node_idx, :] = 0
+                if layer.bias is not None and hasattr(layer, "bias_mask"):
+                    layer.bias_mask.data[node_idx] = 0
+            
+            # Find the next layer and zero out corresponding input connections
+            layer_idx = hidden_layers.index(layer)
+            if layer_idx + 1 < len(linear_layers):  # Check if there's a next layer
+                next_layer = linear_layers[layer_idx + 1]
+                
+                # Initialize mask if not present
+                if not hasattr(next_layer, "weight_mask"):
+                    prune.custom_from_mask(next_layer, name="weight", mask=torch.ones_like(next_layer.weight))
+                
+                # Zero out input connections from pruned nodes
+                for node_idx in node_indices:
+                    next_layer.weight_mask.data[:, node_idx] = 0
 
-        print(f"Pruned {num_to_prune} hidden nodes")
+        print(f"Pruned {num_to_prune} hidden nodes (with forward connections)")
