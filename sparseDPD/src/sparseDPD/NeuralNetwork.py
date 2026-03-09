@@ -76,7 +76,7 @@ class NeuralNetwork:
         """
         return preds, targets
 
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500, grad_clip_val=0.0):
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, use_frames=False, frame_stride=1, frame_length=500, grad_clip_val=0.0, window_stride=1):
         """Train model and return the best model based on validation loss.
 
         Args:
@@ -100,10 +100,10 @@ class NeuralNetwork:
             training_xfc, training_output_aligned = self.training_data(training_dataset)
             train_loader = self.build_dataloaders(training_xfc, training_output_aligned, shuffle=True)
             
-        else: 
+        else:
             x_frames = self._get_frames(training_dataset.input_data, frame_length, frame_stride)
             y_frames = self._get_frames(training_dataset.output_data, frame_length, frame_stride)
-            X, Y = self._precompute_iq_features(x_frames, y_frames)
+            X, Y = self._precompute_iq_features(x_frames, y_frames, window_stride=window_stride)
             train_ds = TensorDataset(X, Y)
             train_loader = DataLoader(train_ds, batch_size=256, shuffle=True, pin_memory=True)
         
@@ -396,11 +396,13 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         n_frames = (n - frame_length) // stride + 1
         return np.stack([sequence[i*stride:i*stride+frame_length] for i in range(n_frames)])
     
-    def _precompute_iq_features(self, x_frames, y_frames):
+    def _precompute_iq_features(self, x_frames, y_frames, window_stride=1):
         """Precompute IQ frame features and targets"""
+        window_stride = max(1, int(window_stride))
         n_frames = x_frames.shape[0]
         valid_t0 = self.num_memory_levels - 1
         n_valid = x_frames.shape[1] - valid_t0
+        n_valid = (n_valid + window_stride - 1) // window_stride if n_valid > 0 else 0
         total = n_frames * n_valid
         feat_dim = 4 * self.num_memory_levels 
 
@@ -413,6 +415,8 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
             windows = sliding_window_view(x_frames, window_shape=self.num_memory_levels, axis=1)
         except Exception:
             windows = np.stack([x_frames[:, i:i + n_valid] for i in range(self.num_memory_levels)], axis=2)
+
+        windows = windows[:, ::window_stride, :]
 
         taps = windows[:, :, ::-1]
         c = np.exp(-1j * np.angle(taps[:, :, 0]))
@@ -428,7 +432,7 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
 
         Xfc = np.hstack([real_pn, imag_pn, A_taps, A3_r]).astype(np.float32)
 
-        y_curr = y_frames[:, valid_t0:].reshape(total)
+        y_curr = y_frames[:, valid_t0::window_stride].reshape(total)
         c_flat = c.reshape(total)
         y_norm = y_curr * c_flat
 
@@ -502,10 +506,12 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         n_frames = (n - frame_length) // stride + 1
         return np.stack([sequence[i*stride:i*stride+frame_length] for i in range(n_frames)])
     
-    def _precompute_iq_features(self, x_frames, y_frames):
+    def _precompute_iq_features(self, x_frames, y_frames, window_stride=1):
         """Precompute IQ frame features and targets (without phase normalization)"""
+        window_stride = max(1, int(window_stride))
         n_frames = x_frames.shape[0]
         n_valid = x_frames.shape[1] - self.num_memory_levels
+        n_valid = (n_valid + window_stride - 1) // window_stride if n_valid > 0 else 0
         total = n_frames * n_valid
         feat_dim = 4 * self.num_memory_levels
 
@@ -520,7 +526,7 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
             windows = np.stack([x_frames[:, i:i + n_valid + 1] for i in range(self.num_memory_levels)], axis=2)
 
         # Skip the first window, same as gen_input_feature does (windows = windows[1:])
-        windows = windows[:, 1:, :]
+        windows = windows[:, 1::window_stride, :]
         
         taps = windows[:, :, ::-1]
         A = np.abs(taps)
@@ -534,7 +540,7 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         Xfc = np.hstack([real_taps, imag_taps, A_taps, A3_r]).astype(np.float32)
 
         # Slice output to match the skipped first window (same as gen_output_feature: y[self.num_memory_levels:])
-        y_curr = y_frames[:, self.num_memory_levels:].reshape(total)
+        y_curr = y_frames[:, self.num_memory_levels::window_stride].reshape(total)
 
         Yout = np.empty((total, 2), dtype=np.float32)
         Yout[:, 0] = np.real(y_curr).astype(np.float32)
@@ -626,6 +632,57 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         y_seq[:, :, 1] = np.imag(y_windows).astype(np.float32)
         
         return y_seq
+
+    @staticmethod
+    def _get_frames(sequence, frame_length, stride):
+        """Extract overlapping frames from a 1D sequence."""
+        n = len(sequence)
+        if n < frame_length:
+            return np.empty((0, frame_length), dtype=np.asarray(sequence).dtype)
+        n_frames = (n - frame_length) // stride + 1
+        return np.stack([sequence[i * stride:i * stride + frame_length] for i in range(n_frames)])
+
+    def _precompute_iq_features(self, x_frames, y_frames, window_stride=1):
+        """Precompute PGJANET framed sequence features and targets.
+
+        Returns:
+            X: (total_windows, M, 2)
+            Y: (total_windows, M, 2)
+        """
+        window_stride = max(1, int(window_stride))
+        n_frames = x_frames.shape[0]
+        M = int(self.num_memory_levels)
+
+        if n_frames == 0 or x_frames.shape[1] < M + 1:
+            return torch.empty((0, M, 2), dtype=torch.float32), torch.empty((0, M, 2), dtype=torch.float32)
+
+        try:
+            from numpy.lib.stride_tricks import sliding_window_view
+            x_windows = sliding_window_view(x_frames, window_shape=M, axis=1)
+            y_windows = sliding_window_view(y_frames, window_shape=M, axis=1)
+        except Exception:
+            n_valid_full = x_frames.shape[1] - M + 1
+            x_windows = np.stack([x_frames[:, i:i + n_valid_full] for i in range(M)], axis=2)
+            y_windows = np.stack([y_frames[:, i:i + n_valid_full] for i in range(M)], axis=2)
+
+        # Match gen_input_feature/gen_output_feature alignment: skip first window
+        x_windows = x_windows[:, 1::window_stride, :]
+        y_windows = y_windows[:, 1::window_stride, :]
+
+        if x_windows.shape[1] == 0:
+            return torch.empty((0, M, 2), dtype=torch.float32), torch.empty((0, M, 2), dtype=torch.float32)
+
+        total = n_frames * x_windows.shape[1]
+
+        X = np.empty((total, M, 2), dtype=np.float32)
+        X[:, :, 0] = np.real(x_windows).reshape(total, M).astype(np.float32)
+        X[:, :, 1] = np.imag(x_windows).reshape(total, M).astype(np.float32)
+
+        Y = np.empty((total, M, 2), dtype=np.float32)
+        Y[:, :, 0] = np.real(y_windows).reshape(total, M).astype(np.float32)
+        Y[:, :, 1] = np.imag(y_windows).reshape(total, M).astype(np.float32)
+
+        return torch.from_numpy(X), torch.from_numpy(Y)
 
     def generate_model_output(self, x):
         """Generate unnormalized output using sequence-to-sequence predictions.
