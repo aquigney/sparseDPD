@@ -77,7 +77,7 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
     
     def get_model(self, model_type='OneLayerNetwork'):
         """Return NN model instance"""
-        input_size = self.num_memory_levels * 4 -2  # Real/Imaginary parts + A and A^3 features
+        input_size = self.num_memory_levels * 4  # Real/Imaginary parts + A and A^3 features
         if model_type == 'OneLayerNetwork':
             hidden_size = 12
             model = OneLayerNetwork(input_size=input_size, hidden_size=hidden_size)
