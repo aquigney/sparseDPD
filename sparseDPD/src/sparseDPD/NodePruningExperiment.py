@@ -1,3 +1,5 @@
+import copy
+
 import torch
 import torch.nn as nn
 from torch.nn.utils import prune
@@ -153,3 +155,4 @@ class NodePruningExperiment(Experiment):
                     next_layer.weight_mask.data[:, node_idx] = 0
 
         print(f"Pruned {num_to_prune} hidden nodes (with forward connections)")
+
