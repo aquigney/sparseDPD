@@ -41,7 +41,7 @@ class NeuralNetwork:
         dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=shuffle)
         return dataloader
 
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3):
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, target_nmse = None):
         """Train model and return the best model based on validation loss"""
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
@@ -60,7 +60,6 @@ class NeuralNetwork:
 
         train_loader = self.build_dataloaders(training_xfc, training_output_aligned)
         valid_loader = self.build_dataloaders(validation_xfc, validation_output_aligned)
-        
         for epoch in range(num_epochs):
             self.nn_model.train()
             running_train_loss = 0
@@ -104,6 +103,10 @@ class NeuralNetwork:
             if (epoch + 1) % 10 == 0:
                 current_lr = optimizer.param_groups[0]['lr']
                 print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}  NMSE={self.calculate_forward_nmse(validation_dataset):.4f} dB")
+
+            # If the target nmse has been reached, break out of the training
+            if target_nmse is not None and self.calculate_forward_nmse(validation_dataset) < target_nmse:
+                break
         
         # Load best model
         self.nn_model.load_state_dict(best_model_state)

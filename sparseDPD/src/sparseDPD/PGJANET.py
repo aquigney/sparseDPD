@@ -133,7 +133,7 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         Y = np.stack([y_iq[i+T-1] for i in starts], axis=0)  # (N-T+1, T, 2)
         return X, Y
     
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3):
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, target_nmse=None):
         """Train model and return the best model based on validation loss"""
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
@@ -197,8 +197,10 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
             
             if (epoch + 1) % 10 == 0:
                 current_lr = optimizer.param_groups[0]['lr']
-                print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}")
+                print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}  NMSE={self.calculate_forward_nmse(validation_dataset):.4f} dB")
         
+            if target_nmse is not None and self.calculate_forward_nmse(validation_dataset) < target_nmse:
+                break
         # Load best model
         self.nn_model.load_state_dict(best_model_state)
         print(f"\nBest model from epoch {best_epoch} with validation loss: {best_valid_loss:.4e}")
