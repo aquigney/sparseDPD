@@ -144,7 +144,14 @@ class AdaptivePruningExperiment(Experiment):
             else:
                 print(f"  REJECTED  (delta: {delta_nmse:+.4f} dB) — restoring model")
                 self.nn_model_copy = saved_model
-                current_fraction = max(self.min_prune_fraction, 0.5 * current_fraction)
+                
+                # Check if we can reduce further
+                new_fraction = 0.5 * current_fraction
+                if new_fraction < self.min_prune_fraction:
+                    print(f"  Cannot reduce fraction below minimum ({self.min_prune_fraction * 100:.2f}%) — stopping")
+                    break
+                    
+                current_fraction = new_fraction
                 print(f"  Reduced fraction to {current_fraction * 100:.2f}%")
 
         # Final summary
