@@ -50,11 +50,11 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
             self.hidden_size = saved_hidden_size
             self.nn_model = self.get_model('PGJANETNetwork').to(self.device)
 
-        self.num_memory_levels = checkpoint.get("num_memory_levels", self.num_memory_levels)
+        #self.num_memory_levels = checkpoint.get("num_memory_levels", self.num_memory_levels)
         self.forward_model = checkpoint.get("forward_model", self.forward_model)
-        self.batch_size = checkpoint.get("batch_size", self.batch_size)
-        self.seq_len = checkpoint.get("seq_len", self.seq_len)
-        self.seq_stride = checkpoint.get("seq_stride", self.seq_stride)
+        #self.batch_size = checkpoint.get("batch_size", self.batch_size)
+        #self.seq_len = checkpoint.get("seq_len", self.seq_len)
+        #self.seq_stride = checkpoint.get("seq_stride", self.seq_stride)
 
         self.nn_model.load_state_dict(checkpoint["state_dict"])
         self.nn_model.eval()
@@ -94,7 +94,10 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
             # Create input windows (N-T+1, T, 2)
             X_windows = np.stack([x_iq[i:i+T] for i in range(N - T + 1)], axis=0)
             X = torch.tensor(X_windows, dtype=torch.float32).to(self.device)
-            preds = self.nn_model(X, return_sequence=False).detach().cpu().numpy()  # (N-T+1, 2)
+            preds = self.nn_model(X).detach().cpu().numpy()  # (N-T+1, T, 2)
+            
+            # Extract last timestep only (many-to-one prediction)
+            preds = preds[:, -1, :]  # (N-T+1, 2)
         
         # Reconstruct complex output
         y_pred = preds[:, 0] + 1j * preds[:, 1]
@@ -130,7 +133,7 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         Y = np.stack([y_iq[i+T-1] for i in starts], axis=0)  # (N-T+1, T, 2)
         return X, Y
     
-    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, target_nmse=None, nmse_eval_interval=10):
+    def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, target_nmse=None):
         """Train model and return the best model based on validation loss"""
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
@@ -154,14 +157,14 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
             self.nn_model.train()
             running_train_loss = 0
             running_valid_loss = 0
-            current_nmse = None
             
             for xb, yb in train_loader:
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
                 optimizer.zero_grad()
-                preds_last = self.nn_model(xb, return_sequence=False)
-                loss = criterion(preds_last, yb)
+                preds_seq = self.nn_model(xb)
+                pre_last = preds_seq[:,-1,:]
+                loss = criterion(pre_last, yb)
                 loss.backward()
                 optimizer.step()
                 running_train_loss += loss.item() * xb.size(0)
@@ -173,8 +176,9 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
                 for xb, yb in valid_loader:
                     xb = xb.to(self.device)
                     yb = yb.to(self.device)
-                    preds_last = self.nn_model(xb, return_sequence=False)
-                    loss = criterion(preds_last, yb)
+                    preds_seq = self.nn_model(xb)
+                    pre_last = preds_seq[:,-1,:]
+                    loss = criterion(pre_last, yb)
                     running_valid_loss += loss.item() * xb.size(0)
                 
             valid_loss = running_valid_loss
@@ -190,17 +194,12 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
                 best_valid_loss = valid_loss
                 best_model_state = copy.deepcopy(self.nn_model.state_dict())
                 best_epoch = epoch + 1
-
-            should_eval_nmse = nmse_eval_interval is not None and nmse_eval_interval > 0 and (epoch + 1) % nmse_eval_interval == 0
-            if should_eval_nmse:
-                current_nmse = self.calculate_forward_nmse(validation_dataset)
             
             if (epoch + 1) % 10 == 0:
                 current_lr = optimizer.param_groups[0]['lr']
-                nmse_display = f"{current_nmse:.4f} dB" if current_nmse is not None else "skipped"
-                print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}  NMSE={nmse_display}")
+                print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}  NMSE={self.calculate_forward_nmse(validation_dataset):.4f} dB")
         
-            if target_nmse is not None and current_nmse is not None and current_nmse < target_nmse:
+            if target_nmse is not None and self.calculate_forward_nmse(validation_dataset) < target_nmse:
                 break
         # Load best model
         self.nn_model.load_state_dict(best_model_state)
@@ -221,8 +220,9 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
 
-                preds_last = self.nn_model(xb, return_sequence=False)
-                loss = criterion(preds_last, yb)
+                preds_seq = self.nn_model(xb)
+                pre_last = preds_seq[:,-1,:]
+                loss = criterion(pre_last, yb)
                 initial_valid_loss += loss.item() * xb.size(0)
         return initial_valid_loss
 
@@ -246,7 +246,7 @@ class PGJANETNetwork(nn.Module):
 
         self.reset_parameters()
 
-    def forward(self, x, h_0=None, return_sequence=True):
+    def forward(self, x, h_0=None):
         # x: (B,T,2)
         if x.ndim != 3 or x.size(-1) != 2:
             raise ValueError(f"Expected x shaped (B,T,2). Got {tuple(x.shape)}")
@@ -260,8 +260,7 @@ class PGJANETNetwork(nn.Module):
             # accept (1,B,H) or (num_layers,B,H) -> use layer 0
             h = h_0[0]
 
-        outputs = [] if return_sequence else None
-        y_t = None
+        outputs = []
 
         for t in range(T):
             x_t = x[:, t, :]  # (B,2)
@@ -292,12 +291,10 @@ class PGJANETNetwork(nn.Module):
             h = f_n * h + (1 - f_n) * g_n
 
             y_t = self.W_o(h)         # (B,2)
-            if return_sequence:
-                outputs.append(y_t)
+            outputs.append(y_t)
 
-        if return_sequence:
-            return torch.stack(outputs, dim=1)  # (B,T,2)
-        return y_t
+        outputs = torch.stack(outputs, dim=1)  # (B,T,2)
+        return outputs
 
     def reset_parameters(self):
         for module in [self.W_a, self.W_p1, self.W_p2, self.W_f, self.W_g, self.W_o]:
