@@ -14,20 +14,23 @@ class Datapath:
 
     def process(self, input_signal):
         """Process the input signal through the inverse model followed by the forward model"""
+        print(f"Your inverse model is type {type(self.inverse_model)} and your forward model is type {type(self.forward_model)}")
         if type(self.inverse_model) == Volterra:
             pre_distorted_signal = self.inverse_model.build_y(input_signal)
             # Process through forward model
             if type(self.forward_model) == Volterra:
                 output_signal = self.forward_model.build_y(pre_distorted_signal)
                 input_signal = input_signal[self.forward_model.num_memory_levels + self.inverse_model.num_memory_levels:]  
-        elif type(self.inverse_model) == NeuralNetwork:
+        elif isinstance(self.inverse_model, NeuralNetwork):
             pre_distorted_signal = self.inverse_model.generate_model_output(input_signal)
-            if type(self.forward_model) == NeuralNetwork:
+            if isinstance(self.forward_model, NeuralNetwork):
                 output_signal = self.forward_model.generate_model_output(pre_distorted_signal)
                 input_signal = input_signal[self.forward_model.num_memory_levels + self.inverse_model.num_memory_levels:]  # Align input signal
             elif type(self.forward_model) == Volterra:
                 output_signal = self.forward_model.build_y(pre_distorted_signal)
                 input_signal = input_signal[self.forward_model.num_memory_levels + self.inverse_model.num_memory_levels:]  # Align input signal
+        else: 
+            print(f"Your inverse model is type {type(self.inverse_model)} and your forward model is type {type(self.forward_model)}")
         # Trim input signal to line up with output signal and return both 
         dataset = Dataset(input_signal, output_signal)
         return dataset

@@ -197,9 +197,12 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
             
             if (epoch + 1) % 10 == 0:
                 current_lr = optimizer.param_groups[0]['lr']
-                print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}  NMSE={self.calculate_forward_nmse(validation_dataset):.4f} dB")
-        
-            if target_nmse is not None and self.calculate_forward_nmse(validation_dataset) < target_nmse:
+                if self.forward_model:
+                    print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}  NMSE={self.calculate_forward_nmse(validation_dataset):.4f} dB")
+                else:
+                    print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}")
+
+            if target_nmse is not None and self.forward_model and self.calculate_forward_nmse(validation_dataset) < target_nmse:
                 break
         # Load best model
         self.nn_model.load_state_dict(best_model_state)

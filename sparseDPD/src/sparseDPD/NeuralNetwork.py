@@ -26,7 +26,7 @@ class NeuralNetwork:
         if self.forward_model:
             model_training_input, model_training_output = dataset.input_data, dataset.output_data
         else:
-            model_training_output, model_training_input = dataset.input_data, dataset.output_data
+            model_training_input, model_training_output = dataset.output_data, dataset.input_data
         training_xfc = self.gen_input_feature(model_training_input)
         training_output_aligned = self.gen_output_feature(model_training_input, model_training_output) 
 
@@ -102,10 +102,13 @@ class NeuralNetwork:
             
             if (epoch + 1) % 10 == 0:
                 current_lr = optimizer.param_groups[0]['lr']
-                print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}  NMSE={self.calculate_forward_nmse(validation_dataset):.4f} dB")
+                if self.forward_model:
+                    print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}  NMSE={self.calculate_forward_nmse(validation_dataset):.4f} dB")
+                else:
+                    print(f"Epoch {epoch + 1:3d}/{num_epochs}  Loss={train_loss:.4e}  Valid Loss={valid_loss:.4e}  LR={current_lr:.2e}")
 
             # If the target nmse has been reached, break out of the training
-            if target_nmse is not None and self.calculate_forward_nmse(validation_dataset) < target_nmse:
+            if target_nmse is not None and self.forward_model and self.calculate_forward_nmse(validation_dataset) < target_nmse:
                 break
         
         # Load best model

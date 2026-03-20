@@ -7,9 +7,15 @@ class Volterra:
         self.num_nl_orders = num_nl_orders
         self.num_memory_levels = num_memory_levels
         self.dataset = dataset
-        input_data = dataset.input_data
-        output_data = dataset.output_data
         self.forward = forward
+        
+        # For inverse models, swap input and output
+        if forward:
+            input_data = dataset.input_data
+            output_data = dataset.output_data
+        else:
+            input_data = dataset.output_data
+            output_data = dataset.input_data
 
         self.A = self.build_coeff_matrix(input_data, output_data) # Coefficient matrix
 

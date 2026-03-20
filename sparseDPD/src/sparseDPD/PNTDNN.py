@@ -111,7 +111,12 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
     
     def gen_output_feature(self, x, y):
         """Generates features from output signal for NN model"""
-        y_norm = y * Dataset.conj_phase(x) 
+        # For forward models: normalize by input phase (x)
+        # For inverse models: normalize by output's own phase (y) so inference phase matches
+        if self.forward_model:
+            y_norm = y * Dataset.conj_phase(x)
+        else:
+            y_norm = y * Dataset.conj_phase(y)
         y_norm = y_norm[self.num_memory_levels:]
         return np.array([np.real(y_norm), np.imag(y_norm)]).T.astype(np.float32)
     
