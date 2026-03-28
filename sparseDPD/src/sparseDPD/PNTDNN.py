@@ -116,7 +116,8 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         if self.forward_model:
             y_norm = y * Dataset.conj_phase(x)
         else:
-            y_norm = y * Dataset.conj_phase(y)
+            #y_norm = y * Dataset.conj_phase(y)
+            y_norm = y * Dataset.conj_phase(x)
         y_norm = y_norm[self.num_memory_levels:]
         return np.array([np.real(y_norm), np.imag(y_norm)]).T.astype(np.float32)
     

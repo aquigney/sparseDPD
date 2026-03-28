@@ -1,0 +1,118 @@
+import copy
+from sparseDPD.DatapathPruningExperiment import DatapathPruningExperiment
+import torch.nn as nn
+
+
+class AdaptiveDatapathPruningExperiment(DatapathPruningExperiment):
+    def __init__(self, datapath, training_dataset, validation_dataset, test_dataset, num_prune_iterations, prune_amount, retrain_epochs, ila_iterations=3, nmse_tolerance=1):
+        super().__init__(datapath, training_dataset, validation_dataset, test_dataset, num_prune_iterations, prune_amount, retrain_epochs, ila_iterations, nmse_tolerance)
+
+    def prune(self):
+        nmse_results = []
+        prune_percentages = []
+
+        linear_layer_names = [
+            name for name, module in self.nn_model_copy.nn_model.named_modules()
+            if isinstance(module, nn.Linear)
+        ]
+        if not linear_layer_names:
+            raise ValueError("No linear layers found to prune in model")
+
+        initial_nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
+        nmse_threshold = initial_nmse + self.nmse_tolerance
+
+        print(f"Baseline NMSE          : {initial_nmse:.4f} dB")
+        print(f"Tolerance              : {self.nmse_tolerance:+.2f} dB")
+        print(f"NMSE must stay below   : {nmse_threshold:.4f} dB")
+        print(f"Initial prune fraction : {self.initial_prune_fraction * 100:.1f}%")
+        print(f"Min prune fraction     : {self.min_prune_fraction * 100:.1f}%")
+        print(f"Max prune fraction     : {self.max_prune_fraction * 100:.1f}%")
+
+        step = 0
+        current_fraction = self.initial_prune_fraction
+
+        while current_fraction >= self.min_prune_fraction:
+            step += 1
+            print(f"\n{'='*60}")
+            print(f"Step {step}  |  fraction = {current_fraction * 100:.2f}%")
+            print(f"{'='*60}")
+
+            # Save model so we can roll back if this step is rejected
+            saved_model = copy.deepcopy(self.nn_model_copy)
+
+            # Apply L1 global unstructured pruning
+            print(f"Pruning {current_fraction * 100:.2f}% of remaining weights...")
+            self.nn_model_copy.prune_model(linear_layer_names, current_fraction)
+
+            current_prune_pct = self.nn_model_copy._get_pruning_percentage()
+            print(f"Current sparsity: {current_prune_pct:.2f}% of weights are zero")
+
+            # Retrain
+            print(f"Retraining for {self.retrain_epochs} epochs...")
+            train_losses, valid_losses, best_epoch = self.nn_model_copy.get_best_model(
+                num_epochs=self.retrain_epochs,
+                training_dataset=self.training_dataset,
+                validation_dataset=self.valid_dataset,
+            )
+
+            nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
+            delta_nmse = nmse - initial_nmse
+            print(f"NMSE: {nmse:.4f} dB  (threshold: {nmse_threshold:.4f} dB)")
+
+            if nmse <= nmse_threshold:
+                print(f"  ACCEPTED  (delta: {delta_nmse:+.4f} dB)")
+                prune_percentages.append(current_prune_pct)
+                nmse_results.append(nmse)
+
+                # Headroom-based adaptive step size
+                if delta_nmse < self.nmse_tolerance / 3:
+                    # Plenty of headroom: be more aggressive next time
+                    current_fraction = min(self.max_prune_fraction, 1.5 * current_fraction)
+                    print(
+                        f"  Plenty of headroom -> increasing next fraction to "
+                        f"{current_fraction * 100:.2f}%"
+                    )
+                elif delta_nmse > 2 * self.nmse_tolerance / 3:
+                    # Close to threshold: be more conservative
+                    current_fraction = max(self.min_prune_fraction, 0.75 * current_fraction)
+                    print(
+                        f"  Close to NMSE limit -> reducing next fraction to "
+                        f"{current_fraction * 100:.2f}%"
+                    )
+                else:
+                    # Moderate headroom: keep step size the same
+                    print(
+                        f"  Moderate headroom -> keeping next fraction at "
+                        f"{current_fraction * 100:.2f}%"
+                    )
+
+            else:
+                print(f"  REJECTED  (delta: {delta_nmse:+.4f} dB) — restoring model")
+                self.nn_model_copy = saved_model
+                
+                # Check if we can reduce further
+                new_fraction = 0.5 * current_fraction
+                if new_fraction < self.min_prune_fraction:
+                    print(f"  Cannot reduce fraction below minimum ({self.min_prune_fraction * 100:.2f}%) — stopping")
+                    break
+                    
+                current_fraction = new_fraction
+                print(f"  Reduced fraction to {current_fraction * 100:.2f}%")
+
+        # Final summary
+        final_nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
+        final_prune_pct = self.nn_model_copy._get_pruning_percentage()
+
+        print(f"\n{'='*60}")
+        print(f"Adaptive pruning finished  ({len(nmse_results)} accepted step(s))")
+        print(
+            f"Final NMSE     : {final_nmse:.4f} dB  "
+            f"(baseline: {initial_nmse:.4f} dB, delta: {final_nmse - initial_nmse:+.4f} dB)"
+        )
+        print(f"Final sparsity : {final_prune_pct:.2f}% of weights zeroed")
+        print(f"{'='*60}")
+
+        return (
+            prune_percentages,
+            nmse_results,
+        )

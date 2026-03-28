@@ -12,7 +12,7 @@ from .LinearExperiment import LinearExperiment
 from .NodePruningExperiment import NodePruningExperiment
 from .AdaptivePruningExperiment import AdaptivePruningExperiment
 from .Experiment import Experiment
-
+from .DatapathPruningExperiment import DatapathPruningExperiment
 # etc...
 
-__all__ = ["Datapath", "Dataset", "DataManager", "NeuralNetwork", "ThreeLayerNetwork", "MultiLayerNetwork", "MultiLayerNetwork_Skip", "PNTDNN_NeuralNetwork", "ARVTDNN_NeuralNetwork", "PGJANET_NeuralNetwork", "PGJANETNetwork", "LinearExperiment", "NodePruningExperiment", "AdaptivePruningExperiment", "Experiment"]
+__all__ = ["Datapath", "Dataset", "DataManager", "NeuralNetwork", "ThreeLayerNetwork", "MultiLayerNetwork", "MultiLayerNetwork_Skip", "PNTDNN_NeuralNetwork", "ARVTDNN_NeuralNetwork", "PGJANET_NeuralNetwork", "PGJANETNetwork", "LinearExperiment", "NodePruningExperiment", "AdaptivePruningExperiment", "DatapathPruningExperiment", "Experiment"]

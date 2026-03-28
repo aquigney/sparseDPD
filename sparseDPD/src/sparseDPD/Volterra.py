@@ -91,3 +91,15 @@ class Volterra:
         nmse_db = 10 * np.log10(nmse)
         
         return nmse_db
+    
+    def retrain(self, new_dataset):
+        """Retrain the Volterra model on a new dataset (e.g. from iterative indirect learning)"""
+        self.dataset = new_dataset
+        if self.forward:
+            input_data = new_dataset.input_data
+            output_data = new_dataset.output_data
+        else:
+            input_data = new_dataset.output_data
+            output_data = new_dataset.input_data
+
+        self.A = self.build_coeff_matrix(input_data, output_data)

@@ -53,8 +53,8 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         #self.num_memory_levels = checkpoint.get("num_memory_levels", self.num_memory_levels)
         self.forward_model = checkpoint.get("forward_model", self.forward_model)
         #self.batch_size = checkpoint.get("batch_size", self.batch_size)
-        #self.seq_len = checkpoint.get("seq_len", self.seq_len)
-        #self.seq_stride = checkpoint.get("seq_stride", self.seq_stride)
+        self.seq_len = checkpoint.get("seq_len", self.seq_len)
+        self.seq_stride = checkpoint.get("seq_stride", self.seq_stride)
 
         self.nn_model.load_state_dict(checkpoint["state_dict"])
         self.nn_model.eval()
