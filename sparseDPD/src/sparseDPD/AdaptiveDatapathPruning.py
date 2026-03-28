@@ -4,29 +4,29 @@ import torch.nn as nn
 
 
 class AdaptiveDatapathPruningExperiment(DatapathPruningExperiment):
-    def __init__(self, datapath, training_dataset, validation_dataset, test_dataset, num_prune_iterations, prune_amount, retrain_epochs, ila_iterations=3, nmse_tolerance=1):
-        super().__init__(datapath, training_dataset, validation_dataset, test_dataset, num_prune_iterations, prune_amount, retrain_epochs, ila_iterations, nmse_tolerance)
+    def __init__(self, datapath, training_dataset, validation_dataset, test_dataset, 
+                 retrain_epochs, ila_iterations=3, 
+                 nmse_tolerance=1, initial_prune_fraction=0.1, min_prune_fraction=0.01, max_prune_fraction=0.5):
+        
+        # No need for num pruning iterations or prune amount
+        super().__init__(datapath=datapath, training_dataset=training_dataset, validation_dataset=validation_dataset, test_dataset=test_dataset, num_prune_iterations=None, prune_amount=None, retrain_epochs=retrain_epochs, ila_iterations=ila_iterations, nmse_tolerance=nmse_tolerance)
+        
+        self.initial_prune_fraction = initial_prune_fraction
+        self.min_prune_fraction = min_prune_fraction
+        self.max_prune_fraction = max_prune_fraction
 
     def prune(self):
+        original_nmse = self.original_datapath.calculate_nmse(self.test_dataset.input_data)
+        nmse_threshold = original_nmse + self.nmse_tolerance
         nmse_results = []
         prune_percentages = []
 
         linear_layer_names = [
-            name for name, module in self.nn_model_copy.nn_model.named_modules()
+            name for name, module in self.inverse_model_copy.nn_model.named_modules()
             if isinstance(module, nn.Linear)
         ]
         if not linear_layer_names:
             raise ValueError("No linear layers found to prune in model")
-
-        initial_nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
-        nmse_threshold = initial_nmse + self.nmse_tolerance
-
-        print(f"Baseline NMSE          : {initial_nmse:.4f} dB")
-        print(f"Tolerance              : {self.nmse_tolerance:+.2f} dB")
-        print(f"NMSE must stay below   : {nmse_threshold:.4f} dB")
-        print(f"Initial prune fraction : {self.initial_prune_fraction * 100:.1f}%")
-        print(f"Min prune fraction     : {self.min_prune_fraction * 100:.1f}%")
-        print(f"Max prune fraction     : {self.max_prune_fraction * 100:.1f}%")
 
         step = 0
         current_fraction = self.initial_prune_fraction
@@ -38,25 +38,26 @@ class AdaptiveDatapathPruningExperiment(DatapathPruningExperiment):
             print(f"{'='*60}")
 
             # Save model so we can roll back if this step is rejected
-            saved_model = copy.deepcopy(self.nn_model_copy)
+            saved_model = copy.deepcopy(self.datapath_copy.inverse_model)
 
             # Apply L1 global unstructured pruning
             print(f"Pruning {current_fraction * 100:.2f}% of remaining weights...")
-            self.nn_model_copy.prune_model(linear_layer_names, current_fraction)
+            self.datapath_copy.inverse_model.prune_model(linear_layer_names, current_fraction)
 
-            current_prune_pct = self.nn_model_copy._get_pruning_percentage()
+            current_prune_pct = self.datapath_copy.inverse_model._get_pruning_percentage()
             print(f"Current sparsity: {current_prune_pct:.2f}% of weights are zero")
 
             # Retrain
             print(f"Retraining for {self.retrain_epochs} epochs...")
-            train_losses, valid_losses, best_epoch = self.nn_model_copy.get_best_model(
-                num_epochs=self.retrain_epochs,
-                training_dataset=self.training_dataset,
-                validation_dataset=self.valid_dataset,
+            self.datapath_copy.train_using_ila(
+                training_dataset = self.training_dataset,
+                valid_dataset = self.validation_dataset,
+                iterations = self.ila_iterations,
+                retrain_epochs_per_iteration=self.retrain_epochs
             )
 
-            nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
-            delta_nmse = nmse - initial_nmse
+            nmse = self.datapath_copy.calculate_nmse(self.test_dataset.input_data)
+            delta_nmse = nmse - original_nmse
             print(f"NMSE: {nmse:.4f} dB  (threshold: {nmse_threshold:.4f} dB)")
 
             if nmse <= nmse_threshold:
@@ -88,7 +89,7 @@ class AdaptiveDatapathPruningExperiment(DatapathPruningExperiment):
 
             else:
                 print(f"  REJECTED  (delta: {delta_nmse:+.4f} dB) — restoring model")
-                self.nn_model_copy = saved_model
+                self.datapath_copy.inverse_model = saved_model
                 
                 # Check if we can reduce further
                 new_fraction = 0.5 * current_fraction
@@ -100,19 +101,18 @@ class AdaptiveDatapathPruningExperiment(DatapathPruningExperiment):
                 print(f"  Reduced fraction to {current_fraction * 100:.2f}%")
 
         # Final summary
-        final_nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
-        final_prune_pct = self.nn_model_copy._get_pruning_percentage()
+        final_nmse = self.datapath_copy.calculate_nmse(self.test_dataset.input_data)
+        final_prune_pct = self.datapath_copy.inverse_model._get_pruning_percentage()
 
         print(f"\n{'='*60}")
         print(f"Adaptive pruning finished  ({len(nmse_results)} accepted step(s))")
         print(
             f"Final NMSE     : {final_nmse:.4f} dB  "
-            f"(baseline: {initial_nmse:.4f} dB, delta: {final_nmse - initial_nmse:+.4f} dB)"
+            f"(baseline: {original_nmse:.4f} dB, delta: {final_nmse - original_nmse:+.4f} dB)"
         )
         print(f"Final sparsity : {final_prune_pct:.2f}% of weights zeroed")
         print(f"{'='*60}")
 
-        return (
-            prune_percentages,
-            nmse_results,
-        )
+        self.best_datapath = copy.deepcopy(self.datapath_copy)  # Final best datapath after adaptive pruning
+
+        return prune_percentages, nmse_results

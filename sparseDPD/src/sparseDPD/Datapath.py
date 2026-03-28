@@ -29,7 +29,6 @@ class Datapath:
 
     def process(self, input_signal):
         """Process the input signal through the inverse model followed by the forward model"""
-        print(f"Your inverse model is type {type(self.inverse_model)} and your forward model is type {type(self.forward_model)}")
         if type(self.inverse_model) == Volterra:
             pre_distorted_signal = self.inverse_model.build_y(input_signal)
             # Process through forward model
