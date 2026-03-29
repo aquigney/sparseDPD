@@ -76,7 +76,22 @@ class Datapath:
             # Get new outputs after retraining
             inverse_model_output = self.inverse_model.generate_model_output(training_dataset.input_data)
             forward_model_output = self.forward_model.generate_model_output(inverse_model_output)
+
+            # Print NMSE after this iteration
+            dataset = Dataset(training_dataset.input_data[total_trim:], forward_model_output)  # Align input with output
+            nmse = dataset.calculate_nmse()
+            print(f"Iteration {iteration+1}/{iterations} - NMSE: {nmse:.4f} dB")
+
+    def train(self, training_dataset, valid_dataset, epochs):
         
+        train_losses_inv, valid_losses_inv, best_epoch_inv = self.inverse_model.get_best_model(
+                num_epochs=epochs, 
+                training_dataset=training_dataset,  # Use the new dataset, not original
+                validation_dataset=valid_dataset
+            )
+        return train_losses_inv, valid_losses_inv, best_epoch_inv
+
+               
     def calculate_nmse(self, input_signal):
         data = self.process(input_signal=input_signal)
         # Calculate NMSE
