@@ -307,37 +307,39 @@ class Datapath:
             
             return sc
         
-        # Always use original input for the input constellation (to preserve frame alignment)
-        input_qam = demodulate_single_frame(dataset.input_data, offset=0)
-        
-        # Get output constellation
+        # Get output constellation first to determine which frame we can compare
         if show_dpd_output:
             # Process through datapath to get DPD-corrected output
             dpd_dataset = self.process(dataset.input_data)
             
             # CRITICAL: Trimming breaks frame alignment!
-            # If trim=30 and nperseg=16384, extracting samples 0:16384 from trimmed signal
-            # gives original samples 30:16414, which spans TWO frames and destroys constellation.
-            # Solution: Skip to next complete frame boundary.
+            # The DPD process trims samples, so we need to extract the SAME logical frame
+            # from both input and output for valid comparison.
             total_trim = self._get_model_trim_amount(self.inverse_model) + self._get_model_trim_amount(self.forward_model)
             
             # Find start of next complete frame after trim
             # If trim=30, nperseg=16384, we need offset = 16384-30 = 16354 to reach frame 1
             samples_into_current_frame = total_trim % nperseg
             if samples_into_current_frame == 0:
-                offset = 0  # Already frame-aligned
+                offset_output = 0  # Already frame-aligned
+                offset_input = 0
             else:
-                offset = nperseg - samples_into_current_frame  # Skip to next frame
+                offset_output = nperseg - samples_into_current_frame  # Skip to next frame in output
+                offset_input = offset_output + total_trim  # Same frame in input (accounting for trim)
             
-            if len(dpd_dataset.output_data) < offset + nperseg:
-                print(f"Warning: Not enough data for aligned frame (need {offset + nperseg}, have {len(dpd_dataset.output_data)})")
+            if len(dpd_dataset.output_data) < offset_output + nperseg:
+                print(f"Warning: Not enough data for aligned frame (need {offset_output + nperseg}, have {len(dpd_dataset.output_data)})")
+                input_qam = demodulate_single_frame(dataset.input_data, offset=0)
                 output_qam = input_qam  # Fallback
             else:
-                output_qam = demodulate_single_frame(dpd_dataset.output_data, offset=offset)
+                # Extract the SAME logical frame from both input and output
+                input_qam = demodulate_single_frame(dataset.input_data, offset=offset_input)
+                output_qam = demodulate_single_frame(dpd_dataset.output_data, offset=offset_output)
             label = 'DPD Output'
             color = 'green'
         else:
-            # Use raw PA output (no DPD)
+            # Use raw PA output (no DPD) - compare frame 0 from both
+            input_qam = demodulate_single_frame(dataset.input_data, offset=0)
             output_qam = demodulate_single_frame(dataset.output_data, offset=0)
             label = 'PA Output (no DPD)'
             color = 'red'
@@ -350,18 +352,36 @@ class Datapath:
         else:
             output_qam_scaled = output_qam
         
-        # Plot both constellations
+        # Calculate EVM (Error Vector Magnitude)
+        # First, estimate and remove any residual phase/gain offset between frames
+        # This handles the case where different OFDM frames have different absolute phases
+        # Find optimal complex scaling α that minimizes |input - α*output|²
+        scaling_factor = np.sum(np.conj(output_qam_scaled) * input_qam) / np.sum(np.abs(output_qam_scaled) ** 2)
+        output_qam_aligned = output_qam_scaled * scaling_factor
+        
+        # Now compute EVM after alignment
+        error_vector = output_qam_aligned - input_qam
+        evm_rms = np.sqrt(np.mean(np.abs(error_vector) ** 2))
+        reference_rms = np.sqrt(np.mean(np.abs(input_qam) ** 2))
+        evm_percent = (evm_rms / reference_rms) * 100
+        evm_db = 20 * np.log10(evm_rms / reference_rms)
+        
+        # Plot both constellations (use aligned version for visual comparison)
         plt.figure(figsize=(10, 10))
         plt.scatter(input_qam.real, input_qam.imag, alpha=0.5, s=5, c='blue', label='Input (Ideal)')
-        plt.scatter(output_qam_scaled.real, output_qam_scaled.imag, alpha=0.5, s=5, c=color, label=label)
+        plt.scatter(output_qam_aligned.real, output_qam_aligned.imag, alpha=0.5, s=5, c=color, label=label)
         plt.xlabel('In-Phase (I)', fontsize=12)
         plt.ylabel('Quadrature (Q)', fontsize=12)
-        plt.title(f'QAM Constellation - Single Frame, Single Carrier\n({len(input_qam):,} symbols, output normalized)', fontsize=14)
+        plt.title(f'QAM Constellation - Single Frame, Single Carrier\n({len(input_qam):,} symbols, phase/gain aligned)\nEVM: {evm_percent:.2f}% ({evm_db:.2f} dB)', fontsize=14)
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.axis('equal')
         plt.tight_layout()
         plt.show()
+        
+        # Print EVM metrics
+        print(f"EVM (RMS): {evm_percent:.3f}%")
+        print(f"EVM (dB): {evm_db:.3f} dB")
     
     @staticmethod
     def plot_signals(dataset):
