@@ -56,34 +56,49 @@ class Datapath:
         dataset = Dataset(input_signal, output_signal)
         return dataset
     
-    def train_using_ila(self, training_dataset, valid_dataset, iterations, retrain_epochs_per_iteration):
-        # Generate initial outputs - no extra slicing needed, models handle trimming internally
-        inverse_model_output = self.inverse_model.generate_model_output(training_dataset.input_data)
-        forward_model_output = self.forward_model.generate_model_output(inverse_model_output)
+    def train_using_ila(self, training_dataset, valid_dataset, iterations, retrain_epochs_per_iteration, seq_length):
+        # Block-wise training: each iteration uses a block of size seq_length
+        # When all blocks are exhausted, cycle back to the start
+        
         total_trim = self._get_model_trim_amount(self.inverse_model) + self._get_model_trim_amount(self.forward_model)
-
+        total_samples = len(training_dataset.input_data)
+        num_blocks = max(1, (total_samples - seq_length) // seq_length + 1)
+        
+        # Track which block to use for each iteration (cycle through blocks)
         for iteration in range(iterations):
-            # Retrain inverse model on the error
+            # Determine which block to use (cycle back to start when exhausted)
+            block_idx = iteration % num_blocks
+            start_idx = block_idx * seq_length
+            end_idx = min(start_idx + seq_length, total_samples)
+            
+            # Extract block of training data
+            block_input = training_dataset.input_data[start_idx:end_idx]
+            block_output = training_dataset.output_data[start_idx:end_idx]
+            block_dataset = Dataset(input_data=block_input, output_data=block_output)
+            
+            # Generate outputs for this block
+            inverse_model_output = self.inverse_model.generate_model_output(block_input)
+            forward_model_output = self.forward_model.generate_model_output(inverse_model_output)
+            
+            # Retrain inverse model on the error for this block
             # Create dataset with forward model output vs original input (aligned)
-            aligned_input = inverse_model_output[self._get_model_trim_amount(self.forward_model):]  # Align with forward model output
+            aligned_input = inverse_model_output[self._get_model_trim_amount(self.forward_model):]
             new_dataset = Dataset(input_data=aligned_input, output_data=forward_model_output)
             train_losses_inv, valid_losses_inv, best_epoch_inv = self.inverse_model.get_best_model(
                 num_epochs=retrain_epochs_per_iteration, 
-                training_dataset=new_dataset,  # Use the new dataset, not original
+                training_dataset=new_dataset,
                 validation_dataset=valid_dataset
             )
 
-            # Get new outputs after retraining
-            inverse_model_output = self.inverse_model.generate_model_output(training_dataset.input_data)
-            forward_model_output = self.forward_model.generate_model_output(inverse_model_output)
-
-            # Print NMSE after this iteration
-            dataset = Dataset(training_dataset.input_data[total_trim:], forward_model_output)  # Align input with output
+            # Calculate NMSE on full training set after this iteration
+            full_inverse_output = self.inverse_model.generate_model_output(training_dataset.input_data)
+            full_forward_output = self.forward_model.generate_model_output(full_inverse_output)
+            dataset = Dataset(training_dataset.input_data[total_trim:], full_forward_output)
             nmse = dataset.calculate_nmse()
-            print(f"Iteration {iteration+1}/{iterations} - NMSE: {nmse:.4f} dB")
+            print(f"Iteration {iteration+1}/{iterations} (Block {block_idx+1}/{num_blocks}, samples {start_idx}-{end_idx}) - NMSE: {nmse:.4f} dB")
 
     def train(self, training_dataset, valid_dataset, epochs):
-        
+
         train_losses_inv, valid_losses_inv, best_epoch_inv = self.inverse_model.get_best_model(
                 num_epochs=epochs, 
                 training_dataset=training_dataset,  # Use the new dataset, not original
@@ -240,6 +255,112 @@ class Datapath:
                   f'Upper (No DPD): {aclr_metrics["aclr_upper_no_dpd"]:.2f} dBc')
         plt.legend()
         plt.grid(True, alpha=0.3)
+        plt.show()
+    
+    def plot_constellation(self, dataset, fs, nperseg, bw_sub_ch, n_sub_ch, show_dpd_output=True):
+        """Plot QAM constellation for OFDM signals.
+        
+        Uses IFFT-frame demodulation for DPA-type datasets (no cyclic prefix).
+        Extracts symbols from ONE CARRIER in the first frame for visualization.
+        
+        Parameters:
+        -----------
+        dataset : Dataset
+            Dataset with input_data and output_data (PA input and PA output)
+        fs : float
+            Sampling frequency (Hz)
+        nperseg : int
+            FFT size / frame length
+        bw_sub_ch : float
+            Sub-channel bandwidth (Hz)
+        n_sub_ch : int
+            Number of sub-channels
+        show_dpd_output : bool, optional
+            If True, show DPD-corrected output. If False, show raw PA output.
+            Default is True.
+        """
+        bin_spacing = fs / nperseg
+        n_active = int(round(bw_sub_ch / bin_spacing))
+        n_half = n_active // 2
+        dc = nperseg // 2
+        carrier_f_shifts = [(i - (n_sub_ch - 1) / 2) * bw_sub_ch for i in range(n_sub_ch)]
+        carrier_centres = [dc + int(round(f / bin_spacing)) for f in carrier_f_shifts]
+        
+        def demodulate_single_frame(signal, offset=0):
+            """Extract QAM symbols from first complete OFDM frame, one carrier only.
+            
+            Parameters:
+            -----------
+            signal : np.ndarray
+                Input signal
+            offset : int
+                Number of samples to skip before extracting frame (for alignment)
+            """
+            frame = signal[offset:offset + nperseg]
+            fd = np.fft.fftshift(np.fft.fft(frame))
+            
+            # Extract from one carrier (pick the second carrier)
+            cc = carrier_centres[1]
+            sc_neg = fd[cc - n_half:cc]
+            sc_pos = fd[cc + 1:cc + n_half + 1]
+            sc = np.concatenate([sc_neg, sc_pos])
+            
+            return sc
+        
+        # Always use original input for the input constellation (to preserve frame alignment)
+        input_qam = demodulate_single_frame(dataset.input_data, offset=0)
+        
+        # Get output constellation
+        if show_dpd_output:
+            # Process through datapath to get DPD-corrected output
+            dpd_dataset = self.process(dataset.input_data)
+            
+            # CRITICAL: Trimming breaks frame alignment!
+            # If trim=30 and nperseg=16384, extracting samples 0:16384 from trimmed signal
+            # gives original samples 30:16414, which spans TWO frames and destroys constellation.
+            # Solution: Skip to next complete frame boundary.
+            total_trim = self._get_model_trim_amount(self.inverse_model) + self._get_model_trim_amount(self.forward_model)
+            
+            # Find start of next complete frame after trim
+            # If trim=30, nperseg=16384, we need offset = 16384-30 = 16354 to reach frame 1
+            samples_into_current_frame = total_trim % nperseg
+            if samples_into_current_frame == 0:
+                offset = 0  # Already frame-aligned
+            else:
+                offset = nperseg - samples_into_current_frame  # Skip to next frame
+            
+            if len(dpd_dataset.output_data) < offset + nperseg:
+                print(f"Warning: Not enough data for aligned frame (need {offset + nperseg}, have {len(dpd_dataset.output_data)})")
+                output_qam = input_qam  # Fallback
+            else:
+                output_qam = demodulate_single_frame(dpd_dataset.output_data, offset=offset)
+            label = 'DPD Output'
+            color = 'green'
+        else:
+            # Use raw PA output (no DPD)
+            output_qam = demodulate_single_frame(dataset.output_data, offset=0)
+            label = 'PA Output (no DPD)'
+            color = 'red'
+        
+        # Normalize output to match input scale (compensate for PA gain)
+        input_rms = np.sqrt(np.mean(np.abs(input_qam) ** 2))
+        output_rms = np.sqrt(np.mean(np.abs(output_qam) ** 2))
+        if output_rms > 1e-10:  # Avoid division by zero
+            output_qam_scaled = output_qam * (input_rms / output_rms)
+        else:
+            output_qam_scaled = output_qam
+        
+        # Plot both constellations
+        plt.figure(figsize=(10, 10))
+        plt.scatter(input_qam.real, input_qam.imag, alpha=0.5, s=5, c='blue', label='Input (Ideal)')
+        plt.scatter(output_qam_scaled.real, output_qam_scaled.imag, alpha=0.5, s=5, c=color, label=label)
+        plt.xlabel('In-Phase (I)', fontsize=12)
+        plt.ylabel('Quadrature (Q)', fontsize=12)
+        plt.title(f'QAM Constellation - Single Frame, Single Carrier\n({len(input_qam):,} symbols, output normalized)', fontsize=14)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.axis('equal')
+        plt.tight_layout()
         plt.show()
     
     @staticmethod

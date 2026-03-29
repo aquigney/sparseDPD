@@ -21,29 +21,33 @@ class DataManager:
             # Create complex arrays for all datasets
             train_input =   self._iq_to_complex(train_input_df)
             train_output =  self._iq_to_complex(train_output_df)
+            self.training_dataset = Dataset(train_input, train_output)
             val_input =     self._iq_to_complex(val_input_df)
             val_output =    self._iq_to_complex(val_output_df)
+            self.validation_dataset = Dataset(val_input, val_output)
             test_input =    self._iq_to_complex(test_input_df)
             test_output =   self._iq_to_complex(test_output_df)
+            self.test_dataset = Dataset(test_input, test_output)
             self.input_data = np.concatenate([train_input, val_input, test_input]) 
             self.output_data = np.concatenate([train_output, val_output, test_output])  
+
         elif filepath:
             self.filepath = filepath
             self.input_data, self.output_data = self.read_file()
         else:
             raise ValueError("Either filepath or all OpenDPD file paths must be provided.")
 
+        if not openDPD_test_input_file or not openDPD_test_output_file or not openDPD_training_input_file or not openDPD_training_output_file or not openDPD_validation_input_file or not openDPD_validation_output_file:
+            self.num_training_points = num_training_points
+            self.num_validaiton_points = num_validaiton_points
+            self.num_test_points = num_test_points
 
-        self.num_training_points = num_training_points
-        self.num_validaiton_points = num_validaiton_points
-        self.num_test_points = num_test_points
+            self.valid_index = None
+            self.test_index = None
 
-        self.valid_index = None
-        self.test_index = None
-
-        self.training_dataset = self.get_training_data()
-        self.validation_dataset = self.get_validation_data()
-        self.test_dataset = self.get_test_data()
+            self.training_dataset = self.get_training_data()
+            self.validation_dataset = self.get_validation_data()
+            self.test_dataset = self.get_test_data()
 
     def _iq_to_complex(self, df):
         """Convert DataFrame with I and Q columns to complex numpy array"""

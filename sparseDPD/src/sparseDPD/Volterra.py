@@ -52,6 +52,10 @@ class Volterra:
             print("Coefficient matrix A is not defined.")
             return None 
         
+    def generate_model_output(self, input_signal):
+        """Generate the output of the Volterra model for a given input signal"""
+        return self.build_y(input_signal)
+        
     def build_coeff_matrix(self, input, output, check_conditioning=False):
         """Build the Volterra Coefficient Matrix A using Least Squares. 
             Check if the matrix becomes ill-conditioned if specified.
