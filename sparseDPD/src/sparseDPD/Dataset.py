@@ -1,6 +1,7 @@
 # Create a Dataset object for loading and processing data
 import numpy as np
 import scipy
+import matplotlib.pyplot as plt
 
 class Dataset:
     def __init__(self, input_data, output_data):
@@ -25,3 +26,5 @@ class Dataset:
         """Return the conj of phase of a complex signal"""
         x = np.asarray(signal)
         return np.exp(-1j * np.angle(x))
+    
+    
