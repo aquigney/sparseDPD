@@ -33,12 +33,21 @@ class NeuralNetwork:
         return training_xfc, training_output_aligned
  
     
-    def build_dataloaders(self, x, y, shuffle=False):
-        """Build dataloaders for dataset"""
+    def build_dataloaders(self, x, y, shuffle=False, num_workers=4, pin_memory=True):
+        """Build dataloaders for dataset with parallel data loading"""
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)
         dataset = TensorDataset(X, Y)
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=shuffle)
+        
+        # Use multiple workers for parallel data loading and pin memory for faster GPU transfer
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=self.batch_size, 
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=pin_memory and torch.cuda.is_available(),
+            persistent_workers=num_workers > 0  # Keep workers alive between epochs
+        )
         return dataloader
 
     def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, target_nmse = None):

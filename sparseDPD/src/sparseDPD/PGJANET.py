@@ -121,6 +121,7 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         return nmse
     
     def make_windows_iq(self, x_complex, y_complex, T):
+        """Optimized window creation using vectorized operations."""
         x_iq = np.stack([np.real(x_complex), np.imag(x_complex)], axis=-1).astype(np.float32)  # (N,2)
         y_iq = np.stack([np.real(y_complex), np.imag(y_complex)], axis=-1).astype(np.float32)  # (N,2)
 
@@ -128,9 +129,27 @@ class PGJANET_NeuralNetwork(NeuralNetwork):
         if N < T:
             return np.empty((0, T, 2), np.float32), np.empty((0, 2), np.float32)
 
-        starts = range(0, N-T+1, self.seq_stride)
-        X = np.stack([x_iq[i:i+T] for i in starts], axis=0)  # (N-T+1, T, 2)
-        Y = np.stack([y_iq[i+T-1] for i in starts], axis=0)  # (N-T+1, T, 2)
+        # Use stride_tricks for efficient window creation (avoids copying data)
+        from numpy.lib.stride_tricks import as_strided
+        
+        # Calculate number of windows
+        num_windows = (N - T) // self.seq_stride + 1
+        
+        if self.seq_stride == 1:
+            # Optimized path for stride=1 using as_strided (zero-copy)
+            shape_x = (num_windows, T, 2)
+            strides_x = (x_iq.strides[0], x_iq.strides[0], x_iq.strides[1])
+            X = as_strided(x_iq, shape=shape_x, strides=strides_x).copy()  # Copy at end for safety
+            
+            # Y is just the last timestep of each window
+            Y = y_iq[T-1:T-1+num_windows]
+        else:
+            # For non-unit stride, use optimized indexing
+            starts = np.arange(0, N-T+1, self.seq_stride)
+            idx = starts[:, None] + np.arange(T)  # Broadcasting: (num_windows, T)
+            X = x_iq[idx]  # (num_windows, T, 2)
+            Y = y_iq[starts + T - 1]  # (num_windows, 2)
+        
         return X, Y
     
     def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, target_nmse=None):
