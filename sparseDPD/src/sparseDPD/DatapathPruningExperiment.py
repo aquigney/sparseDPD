@@ -4,7 +4,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 
 class DatapathPruningExperiment():
-    def __init__(self, datapath, training_dataset, validation_dataset, test_dataset, num_prune_iterations, prune_amount, retrain_epochs, ila_iterations=3, nmse_tolerance=1):
+    def __init__(self, datapath, training_dataset, validation_dataset, test_dataset,num_prune_iterations, prune_amount, retrain_epochs, ila_iterations=3, nmse_tolerance=1, seq_length=None):
         self.original_datapath = datapath
         self.training_dataset = training_dataset
         self.validation_dataset = validation_dataset
@@ -17,6 +17,10 @@ class DatapathPruningExperiment():
         self.datapath_copy = Datapath(datapath.forward_model, self.inverse_model_copy)  # Create a copy of the datapath with the copied forward model
         self.best_datapath = copy.deepcopy(self.datapath_copy)  # To keep track of the best performing datapath
         self.nmse_tolerance = nmse_tolerance
+        if seq_length is None:
+            self.seq_length = len(training_dataset.input_data)  # Use full length if not specified
+        else:
+            self.seq_length = seq_length
 
 
     def run(self):
@@ -57,7 +61,8 @@ class DatapathPruningExperiment():
                 training_dataset = self.training_dataset,
                 valid_dataset = self.validation_dataset,
                 iterations = self.ila_iterations,
-                retrain_epochs_per_iteration=self.retrain_epochs
+                retrain_epochs_per_iteration=self.retrain_epochs,
+                seq_length=self.seq_length
             )
             
             # Calculate NMSE
