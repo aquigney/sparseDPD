@@ -18,6 +18,9 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         
     def write_nn_to_file(self, file_path):
         """Persist PNTDNN configuration and learned weights to a file."""
+        # Make pruning permanent before saving to avoid loading issues
+        self.make_pruning_permanent()
+        
         payload = {
             "num_memory_levels": self.num_memory_levels,
             "model_type": self.model_type,

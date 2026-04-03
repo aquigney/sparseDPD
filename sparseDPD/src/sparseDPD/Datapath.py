@@ -56,10 +56,11 @@ class Datapath:
         dataset = Dataset(input_signal, output_signal)
         return dataset
     
-    def train_using_ila(self, training_dataset, valid_dataset, iterations, retrain_epochs_per_iteration, seq_length):
+    def train_using_ila(self, training_dataset, valid_dataset, iterations, retrain_epochs_per_iteration, seq_length=None):
         # Block-wise training: each iteration uses a block of size seq_length
         # When all blocks are exhausted, cycle back to the start
-        
+        if seq_length == None:
+            seq_length = len(training_dataset.input_data)
         total_trim = self._get_model_trim_amount(self.inverse_model) + self._get_model_trim_amount(self.forward_model)
         total_samples = len(training_dataset.input_data)
         num_blocks = max(1, (total_samples - seq_length) // seq_length + 1)
@@ -96,7 +97,7 @@ class Datapath:
             dataset = Dataset(training_dataset.input_data[total_trim:], full_forward_output)
             nmse = dataset.calculate_nmse()
             print(f"Iteration {iteration+1}/{iterations} (Block {block_idx+1}/{num_blocks}, samples {start_idx}-{end_idx}) - NMSE: {nmse:.4f} dB")
-
+            print("-"*50)
     def train(self, training_dataset, valid_dataset, epochs):
 
         train_losses_inv, valid_losses_inv, best_epoch_inv = self.inverse_model.get_best_model(

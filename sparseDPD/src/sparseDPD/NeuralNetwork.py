@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import copy
 
 class NeuralNetwork:
-    def __init__(self, num_memory_levels, model_type='OneLayerNetwork', forward_model=False, batch_size=256):
+    def __init__(self, num_memory_levels, model_type='OneLayerNetwork', forward_model=False, batch_size=4096):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using {self.device} device")
         self.num_memory_levels = num_memory_levels
@@ -33,7 +33,7 @@ class NeuralNetwork:
         return training_xfc, training_output_aligned
  
     
-    def build_dataloaders(self, x, y, shuffle=False, num_workers=4, pin_memory=True):
+    def build_dataloaders(self, x, y, shuffle=False, num_workers=0, pin_memory=True):
         """Build dataloaders for dataset with parallel data loading"""
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)
@@ -177,6 +177,20 @@ class NeuralNetwork:
             pruning_method=prune.L1Unstructured,
             amount=prune_amount,
         )
+    
+    def make_pruning_permanent(self):
+        """Remove pruning reparameterization by making pruned weights permanent.
+        
+        Converts weight_orig + weight_mask back to regular weight parameters.
+        Call this before saving a pruned model to avoid loading issues.
+        """
+        for name, module in self.nn_model.named_modules():
+            if isinstance(module, nn.Linear):
+                # Check if this layer has been pruned
+                if hasattr(module, 'weight_orig'):
+                    prune.remove(module, 'weight')
+                if hasattr(module, 'bias_orig'):
+                    prune.remove(module, 'bias')
 
     def _calculate_initial_valid_loss(self, validation_dataset):
         # Calculate initial validation loss (for pruning experiments)
