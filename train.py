@@ -1,5 +1,5 @@
 # Train model based on input output file
-from sparseDPD import PNTDNN_NeuralNetwork, DataManager
+from sparseDPD import PNTDNN_NeuralNetwork, DataManager, PhysicalDatapath, Dataset
 
 
 # Read input output (IQ data) from file
@@ -20,6 +20,28 @@ openDPD_dataManager = DataManager(
 )
 
 # Instantiate Train PNTDNN model
-PNTDNN_inverse_nn = PNTDNN_NeuralNetwork(num_memory_levels=15, model_type='OneLayerNetwork', nn_file_path=None, forward_model=False, batch_size=512, hidden_size=16)
+PNTDNN_inverse_nn = PNTDNN_NeuralNetwork(num_memory_levels=15, model_type='OneLayerNetwork', nn_file_path=None, forward_model=False)
+physical_datapath = PhysicalDatapath(inverse_model=PNTDNN_inverse_nn)
+
+
+# Build a data set using the input from openDPD, and the output from the PA
+training_input = openDPD_dataManager.training_dataset.input_data
+training_output = physical_datapath.send_to_physical_pa(training_input)
+training_dataset = Dataset(input_data=training_input, output_data=training_output)
+
+valid_input = openDPD_dataManager.validation_dataset.input_data
+valid_output = physical_datapath.send_to_physical_pa(valid_input)
+valid_dataset = Dataset(input_data=valid_input, output_data=valid_output)
 
 # Now use actual PA as forward model
+
+physical_datapath.train_using_ila(training_dataset=training_dataset, valid_dataset=valid_dataset, iterations=5, retrain_epochs_per_iteration=50)
+
+
+# Measure PA output with the trained inverse model as input to the PA
+test_input = openDPD_dataManager.test_dataset.input_data
+test_output = physical_datapath.send_to_physical_pa(test_input)
+test_dataset = Dataset(input_data=test_input, output_data=test_output)
+
+nmse = test_dataset.calculate_nmse()
+print(f"Final NMSE on test set: {nmse:.4f} dB")
