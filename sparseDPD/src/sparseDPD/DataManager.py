@@ -69,8 +69,16 @@ class DataManager:
         """Read input and output data from file"""
         if self.filepath.endswith(".mat"):
             data = scipy.io.loadmat(self.filepath)
-            self.input_data = data['x'].squeeze()
-            self.output_data = data['y'].squeeze()
+            # Check for 'x' and 'y' columns first, fallback to 'x1' and 'u1'
+            if 'x' in data and 'y' in data:
+                self.input_data = data['x'].squeeze()
+                self.output_data = data['y'].squeeze()
+            elif 'x1' in data and 'u' in data:
+                self.input_data = data['x1'].squeeze()
+                self.output_data = data['u'].squeeze()
+            else:
+                raise KeyError(f"Could not find expected data columns in .mat file. "
+                             f"Available keys: {[k for k in data.keys() if not k.startswith('__')]}")
         return self.input_data, self.output_data
     
     def plot_pa_characteristics(self, num_points=5000, figsize=(14, 6)):

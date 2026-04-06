@@ -4,6 +4,7 @@ import torch.nn as nn
 
 from .Experiment import Experiment
 
+import copy
 
 class AdaptivePruningExperiment(Experiment):
     """
@@ -41,17 +42,18 @@ class AdaptivePruningExperiment(Experiment):
         training_dataset,
         valid_dataset,
         test_dataset,
-        nmse_tolerance,
+        nmse_threshold,
         initial_prune_fraction=0.5,
         min_prune_fraction=0.01,
         max_prune_fraction=0.5,
     ):
         super().__init__(nn_model, training_dataset, valid_dataset, test_dataset)
         self.retrain_epochs = retrain_epochs
-        self.nmse_tolerance = nmse_tolerance
+        self.nmse_threshold = nmse_threshold
         self.initial_prune_fraction = initial_prune_fraction
         self.min_prune_fraction = min_prune_fraction
         self.max_prune_fraction = max_prune_fraction
+        self.best_model = copy.deepcopy(self.nn_model_copy)
 
     def prune(self):
         nmse_results = []
@@ -69,11 +71,11 @@ class AdaptivePruningExperiment(Experiment):
             raise ValueError("No linear layers found to prune in model")
 
         initial_nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
-        nmse_threshold = initial_nmse + self.nmse_tolerance
+        self.nmse_tolerance = self.nmse_threshold - initial_nmse
 
         print(f"Baseline NMSE          : {initial_nmse:.4f} dB")
         print(f"Tolerance              : {self.nmse_tolerance:+.2f} dB")
-        print(f"NMSE must stay below   : {nmse_threshold:.4f} dB")
+        print(f"NMSE must stay below   : {self.nmse_threshold:.4f} dB")
         print(f"Initial prune fraction : {self.initial_prune_fraction * 100:.1f}%")
         print(f"Min prune fraction     : {self.min_prune_fraction * 100:.1f}%")
         print(f"Max prune fraction     : {self.max_prune_fraction * 100:.1f}%")
@@ -109,9 +111,9 @@ class AdaptivePruningExperiment(Experiment):
 
             nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
             delta_nmse = nmse - initial_nmse
-            print(f"NMSE: {nmse:.4f} dB  (threshold: {nmse_threshold:.4f} dB)")
+            print(f"NMSE: {nmse:.4f} dB  (threshold: {self.nmse_threshold:.4f} dB)")
 
-            if nmse <= nmse_threshold:
+            if nmse <= self.nmse_threshold:
                 print(f"  ACCEPTED  (delta: {delta_nmse:+.4f} dB)")
                 prune_percentages.append(current_prune_pct)
                 nmse_results.append(nmse)
@@ -166,7 +168,7 @@ class AdaptivePruningExperiment(Experiment):
         )
         print(f"Final sparsity : {final_prune_pct:.2f}% of weights zeroed")
         print(f"{'='*60}")
-
+        self.best_model = copy.deepcopy(self.nn_model_copy)
         return (
             prune_percentages,
             nmse_results,

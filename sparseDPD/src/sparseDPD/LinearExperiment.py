@@ -1,12 +1,15 @@
 from .Experiment import Experiment
 import torch.nn as nn
+import copy
 
 class LinearExperiment(Experiment):
-    def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset):
+    def __init__(self, nn_model, num_prune_iterations, prune_amount, retrain_epochs, training_dataset, valid_dataset, test_dataset, nmse_tolerance):
         super().__init__(nn_model, training_dataset, valid_dataset, test_dataset)
         self.num_prune_iterations = num_prune_iterations
         self.prune_amount = prune_amount
         self.retrain_epochs = retrain_epochs
+        self.nmse_tolerance = nmse_tolerance
+        self.best_model = copy.deepcopy(self.nn_model_copy)
 
     def prune(self):
         nmse_results = []
@@ -53,5 +56,8 @@ class LinearExperiment(Experiment):
             nmse = self.nn_model_copy.calculate_forward_nmse(self.test_dataset)
             nmse_results.append(nmse)
             print(f"NMSE: {nmse:.4f} dB")
+            if nmse < self.nmse_tolerance:
+                self.best_model = copy.deepcopy(self.nn_model_copy)
         
+
         return prune_percentages, nmse_results, valid_losses_final, all_best_epochs, all_valid_losses

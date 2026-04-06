@@ -22,7 +22,6 @@ class DatapathPruningExperiment():
         else:
             self.seq_length = seq_length
 
-
     def run(self):
         initial_nmse = self.datapath_copy.calculate_nmse(self.test_dataset.input_data)
         
@@ -71,7 +70,7 @@ class DatapathPruningExperiment():
             print(f"NMSE: {nmse:.4f} dB")
             
             # Only update if withing NMSE tolerance of original (to avoid over-pruning)
-            if nmse < original_nmse + self.nmse_tolerance:
+            if nmse < self.nmse_tolerance:
                 self.best_datapath = copy.deepcopy(self.datapath_copy)
 
         return prune_percentages, nmse_results
