@@ -160,3 +160,8 @@ class DataManager:
         print(f"Output amplitude range: {np.min(output_amplitude):.4f} to {np.max(output_amplitude):.4f}")
         print(f"Estimated small-signal gain: {estimated_gain:.4f}")
         print(f"Phase distortion range: {np.min(phase_diff_deg):.2f}° to {np.max(phase_diff_deg):.2f}°")
+
+
+    def save_to_mat_file(self, output_data, filename):
+        """Save input and output data to a .mat file with the same structure as the original."""
+        scipy.io.savemat(filename, {'x': self.input_data, 'y': output_data})
