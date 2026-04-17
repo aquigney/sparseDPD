@@ -15,9 +15,6 @@ class Datapath:
         self.inverse_model = inverse_model
 
     def _get_model_trim_amount(self, model):
-        """Get the number of samples trimmed by a model's output.
-        PGJANET uses windowing and trims (seq_len - 1) samples.
-        Other models trim num_memory_levels samples."""
         if isinstance(model, PGJANET_NeuralNetwork):
             return model.seq_len - 1
         elif isinstance(model, NeuralNetwork):
@@ -28,7 +25,6 @@ class Datapath:
             return 0
 
     def process(self, input_signal):
-        """Process the input signal through the inverse model followed by the forward model"""
         if type(self.inverse_model) == Volterra:
             pre_distorted_signal = self.inverse_model.build_y(input_signal)
             # Process through forward model
@@ -114,7 +110,6 @@ class Datapath:
         return data.calculate_nmse()
     
     def plot_spectrum(self, input_data):
-        """Should plot a comparison between the spectrum, and what it would be with no DPD"""
         output_data = self.process(input_data)
         output_data_no_DPD = self.forward_model.generate_model_output(input_data)
         plt.figure()
@@ -150,13 +145,6 @@ class Datapath:
     
     @staticmethod
     def _compute_aclr(signal, channel_bw, channel_spacing, fs):
-        """
-        Compute ACLR for a given signal.
-        
-        Returns:
-        --------
-        tuple : (lower_aclr, upper_aclr) in dBc
-        """
         # Compute PSD using FFT
         N = len(signal)
         fft_signal = np.fft.fft(signal)
@@ -197,11 +185,6 @@ class Datapath:
         return aclr_lower, aclr_upper
     
     def plot_spectrum_with_aclr(self, input_data, channel_bw=0.1, channel_spacing=0.15, fs=1.0):
-        """
-        Plot spectrum with ACLR channel boundaries marked.
-        
-        Parameters same as calculate_aclr()
-        """
         # Get output with and without DPD
         output_data = self.process(input_data)
         output_data_no_DPD = self.forward_model.generate_model_output(input_data)
@@ -259,30 +242,6 @@ class Datapath:
         plt.show()
     
     def plot_constellation(self, dataset, fs, nperseg, bw_sub_ch, n_sub_ch, show_dpd_output=True, plot_all_carriers=False):
-        """Plot QAM constellation for OFDM signals.
-        
-        Uses IFFT-frame demodulation for DPA-type datasets (no cyclic prefix).
-        Extracts symbols from one or all carriers in the first frame for visualization.
-        
-        Parameters:
-        -----------
-        dataset : Dataset
-            Dataset with input_data and output_data (PA input and PA output)
-        fs : float
-            Sampling frequency (Hz)
-        nperseg : int
-            FFT size / frame length
-        bw_sub_ch : float
-            Sub-channel bandwidth (Hz)
-        n_sub_ch : int
-            Number of sub-channels
-        show_dpd_output : bool, optional
-            If True, show DPD-corrected output. If False, show raw PA output.
-            Default is True.
-        plot_all_carriers : bool, optional
-            If True, plot all carriers on same constellation. If False, plot only one carrier.
-            Default is False.
-        """
         bin_spacing = fs / nperseg
         n_active = int(round(bw_sub_ch / bin_spacing))
         n_half = n_active // 2
@@ -291,17 +250,6 @@ class Datapath:
         carrier_centres = [dc + int(round(f / bin_spacing)) for f in carrier_f_shifts]
         
         def demodulate_single_frame(signal, offset=0, carrier_idx=None):
-            """Extract QAM symbols from first complete OFDM frame.
-            
-            Parameters:
-            -----------
-            signal : np.ndarray
-                Input signal
-            offset : int
-                Number of samples to skip before extracting frame (for alignment)
-            carrier_idx : int or None
-                If int, extract from that carrier index. If None, extract from all carriers.
-            """
             frame = signal[offset:offset + nperseg]
             fd = np.fft.fftshift(np.fft.fft(frame))
             

@@ -17,7 +17,6 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
             self.load_nn_from_file(nn_file_path)
         
     def write_nn_to_file(self, file_path):
-        """Persist PNTDNN configuration and learned weights to a file."""
         # Make pruning permanent before saving to avoid loading issues
         self.make_pruning_permanent()
         
@@ -30,7 +29,6 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         torch.save(payload, file_path)
 
     def load_nn_from_file(self, file_path):
-        """Load PNTDNN configuration and weights from a saved file."""
         checkpoint = torch.load(file_path, map_location=self.device)
 
         if "state_dict" not in checkpoint:
@@ -47,7 +45,6 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         self.nn_model.eval()
 
     def get_model(self, model_type='OneLayerNetwork'):
-        """Return NN model instance"""
         input_size = self.num_memory_levels * 4 -2  # Real/Imaginary parts + A and A^3 features
         if model_type == 'OneLayerNetwork':
             hidden_size = 12
@@ -75,7 +72,6 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         return model
     
     def gen_input_feature(self, x):
-        """Generates features from input signal for NN model"""
 
         num_points = len(x)
         phase = Dataset.conj_phase(x) #conj
@@ -113,7 +109,6 @@ class PNTDNN_NeuralNetwork(NeuralNetwork):
         return xfc
     
     def gen_output_feature(self, x, y):
-        """Generates features from output signal for NN model"""
         # For forward models: normalize by input phase (x)
         # For inverse models: normalize by output's own phase (y) so inference phase matches
         if self.forward_model:

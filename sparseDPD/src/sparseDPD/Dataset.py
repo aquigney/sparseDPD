@@ -5,17 +5,14 @@ import matplotlib.pyplot as plt
 
 class Dataset:
     def __init__(self, input_data, output_data):
-        """Input and output data should be in complex format"""
         self.input_data = input_data
         self.output_data = output_data
 
     def input_phase(self):
-        """Return the phase of a complex signal"""
         Ax = np.abs(self.input_data)
         return np.conj(self.input_data)/Ax
 
     def calculate_nmse(self):
-        """Calculate NMSE between input and output signals"""
         power_input = np.mean(np.abs(self.input_data)**2)
         power_error = np.mean(np.abs(self.input_data - self.output_data)**2)
         nmse = 10 * np.log10(power_error / power_input)
@@ -23,41 +20,11 @@ class Dataset:
 
     @staticmethod
     def conj_phase(signal):
-        """Return the conj of phase of a complex signal"""
         x = np.asarray(signal)
         return np.exp(-1j * np.angle(x))
     
     def plot_spectrum(self, title='Spectrum', show_plot=True, 
                      fs=1.0, freq_unit='Normalized', figsize=(10, 6), num_points=1024, save_path=None, plot_input=True, plot_output=True):
-        """
-        Plot the power spectrum of input and output signals.
-        
-        Parameters:
-        -----------
-        title : str
-            Title for the plot
-        show_plot : bool
-            Whether to display the plot using plt.show()
-        fs : float
-            Sampling frequency. Default is 1.0 (normalized frequency)
-        freq_unit : str
-            Unit for frequency axis (e.g., 'MHz', 'GHz', 'Normalized')
-        figsize : tuple
-            Figure size as (width, height)
-        num_points : int
-            Number of points for FFT computation
-        save_path : str, optional
-            Path to save the figure. If None, figure is not saved.
-        plot_input : bool
-            Whether to plot the input signal spectrum.
-        plot_output : bool
-            Whether to plot the output signal spectrum.
-
-
-        Returns:
-        --------
-        fig, ax : matplotlib figure and axis objects
-        """
         # Create figure with high-quality settings for reports
         fig, ax = plt.subplots(figsize=figsize, dpi=100)
         
@@ -113,26 +80,6 @@ class Dataset:
         return fig, ax
     
     def plot_constellation(self, fs, nperseg, bw_sub_ch, n_sub_ch, plot_all_carriers=False):
-        """Plot QAM constellation for OFDM signals from raw PA measurements.
-        
-        Uses IFFT-frame demodulation for OFDM datasets (no cyclic prefix).
-        Extracts symbols from one or all carriers in the first frame for visualization.
-        Compares input (ideal transmitted signal) vs output (actual PA output).
-        
-        Parameters:
-        -----------
-        fs : float
-            Sampling frequency (Hz)
-        nperseg : int
-            FFT size / frame length
-        bw_sub_ch : float
-            Sub-channel bandwidth (Hz)
-        n_sub_ch : int
-            Number of sub-channels
-        plot_all_carriers : bool, optional
-            If True, plot all carriers on same constellation. If False, plot only one carrier.
-            Default is False.
-        """
         bin_spacing = fs / nperseg
         n_active = int(round(bw_sub_ch / bin_spacing))
         n_half = n_active // 2

@@ -3,7 +3,6 @@ import numpy as np
 
 class Volterra:
     def __init__(self, num_nl_orders, num_memory_levels, dataset, forward=True):
-        """Class to create a Volterra model"""
         self.num_nl_orders = num_nl_orders
         self.num_memory_levels = num_memory_levels
         self.dataset = dataset
@@ -20,7 +19,6 @@ class Volterra:
         self.A = self.build_coeff_matrix(input_data, output_data) # Coefficient matrix
 
     def build_x_matrix(self, x):
-        """Builds a Volterra X matrix for input signal x"""
         num_points = len(x)
         X = np.zeros((num_points, self.num_memory_levels * self.num_nl_orders), dtype=np.complex128)
         
@@ -35,7 +33,6 @@ class Volterra:
         return X
     
     def build_y(self, u):
-        """Build the output vector of the Volterra Model"""
         if self.A is not None:
             num_points = len(u)
             y = np.zeros((num_points,), dtype=np.complex128)
@@ -53,13 +50,10 @@ class Volterra:
             return None 
         
     def generate_model_output(self, input_signal):
-        """Generate the output of the Volterra model for a given input signal"""
         return self.build_y(input_signal)
         
     def build_coeff_matrix(self, input, output, check_conditioning=False):
-        """Build the Volterra Coefficient Matrix A using Least Squares. 
-            Check if the matrix becomes ill-conditioned if specified.
-        """
+    
 
         X = self.build_x_matrix(input)
         X_trimmed = X[self.num_memory_levels:, :]
@@ -76,7 +70,6 @@ class Volterra:
     
     
     def calculate_volterra_nmse(self, dataset):
-        """Calculate how closely the volterra model fits the actual PA output"""
         input = dataset.input_data # Input data
         output = dataset.output_data # Actual PA output data
 
@@ -97,7 +90,6 @@ class Volterra:
         return nmse_db
     
     def retrain(self, new_dataset):
-        """Retrain the Volterra model on a new dataset (e.g. from iterative indirect learning)"""
         self.dataset = new_dataset
         if self.forward:
             input_data = new_dataset.input_data

@@ -5,7 +5,6 @@ import torch.nn as nn
 import numpy as np
 
 class Experiment:
-    """General Experiment class, instantiates well trained original model"""
     def __init__(self, nn_model, training_dataset, valid_dataset, test_dataset):
         self.original_nn_model = nn_model  # Keep original model untouched
         self.nn_model_copy = copy.deepcopy(nn_model)  # Will be set to working copy
@@ -43,10 +42,7 @@ class Experiment:
         plt.show()
         
     def plot_training_curves(self, all_valid_losses, all_best_epochs, prune_percentages):
-        """
-        Plot validation loss curves sequentially (one after another),
-        with best-epoch markers and connecting lines between iterations.
-        """
+        
 
         n_iterations = len(all_valid_losses)
         colors = plt.cm.viridis(np.linspace(0, 1, n_iterations))

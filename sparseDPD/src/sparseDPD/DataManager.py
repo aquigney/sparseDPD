@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 class DataManager:
     def __init__(self, num_training_points, num_validaiton_points, num_test_points, filepath=None,
                  openDPD_test_input_file=None, openDPD_test_output_file=None, openDPD_training_input_file=None, openDPD_training_output_file=None, openDPD_validation_input_file=None, openDPD_validation_output_file=None):
-        """Breaks full data set into section"""
 
         if openDPD_test_input_file and openDPD_test_output_file and openDPD_training_input_file and openDPD_training_output_file and openDPD_validation_input_file and openDPD_validation_output_file:
             # Create the input and output vectors, the files are all csv files and contain to columns I and Q
@@ -51,7 +50,6 @@ class DataManager:
             self.test_dataset = self.get_test_data()
 
     def _iq_to_complex(self, df):
-        """Convert DataFrame with I and Q columns to complex numpy array"""
         return (df['I'].values + 1j * df['Q'].values).astype(np.complex128)
 
     def get_training_data(self):
@@ -66,7 +64,6 @@ class DataManager:
         return Dataset(self.input_data[self.test_index:], self.output_data[self.test_index:])
     
     def read_file(self):
-        """Read input and output data from file"""
         if self.filepath.endswith(".mat"):
             data = scipy.io.loadmat(self.filepath)
             # Check for 'x' and 'y' columns first, fallback to 'x1' and 'u1'
@@ -82,20 +79,7 @@ class DataManager:
         return self.input_data, self.output_data
     
     def plot_pa_characteristics(self, num_points=5000, figsize=(14, 6)):
-        """Plot AM/AM and AM/PM characteristics of the PA.
-        
-        Shows the nonlinear behavior of the power amplifier by plotting:
-        - AM/AM: Output amplitude vs Input amplitude (gain compression)
-        - AM/PM: Output phase shift vs Input amplitude (phase distortion)
-        
-        Parameters:
-        -----------
-        num_points : int, optional
-            Number of data points to plot (for performance). Default is 5000.
-        figsize : tuple, optional
-            Figure size (width, height) in inches. Default is (14, 6).
-        """
-
+    
         input_signal = self.input_data
         output_signal = self.output_data
         # Downsample if dataset is large

@@ -15,7 +15,6 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
             self.load_nn_from_file(nn_file_path)
         
     def write_nn_to_file(self, file_path):
-        """Persist ARVTDNN configuration and learned weights to a file."""
         # Make pruning permanent before saving to avoid loading issues
         self.make_pruning_permanent()
         
@@ -28,7 +27,6 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         torch.save(payload, file_path)
 
     def load_nn_from_file(self, file_path):
-        """Load ARVTDNN configuration and weights from a saved file."""
         checkpoint = torch.load(file_path, map_location=self.device)
 
         if "state_dict" not in checkpoint:
@@ -45,7 +43,6 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         self.nn_model.eval()
 
     def gen_input_feature(self, x):
-        """Generates features from input signal for NN model"""
         x = np.asarray(x)
         N = x.shape[0]
         M = int(self.num_memory_levels)
@@ -65,9 +62,9 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         A = np.abs(taps)
         A3 = A ** 3
 
-        real_taps = np.real(taps)               # (N-M+1, M)
-        imag_taps = np.imag(taps)               # (N-M+1, M)
-        A_taps = A                              # (N-M+1, M)
+        real_taps = np.real(taps)               
+        imag_taps = np.imag(taps)               
+        A_taps = A                             
 
         xfc = np.hstack([
             real_taps,
@@ -79,7 +76,6 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         return xfc
     
     def get_model(self, model_type='OneLayerNetwork'):
-        """Return NN model instance"""
         input_size = self.num_memory_levels * 4  # Real/Imaginary parts + A and A^3 features
         if model_type == 'OneLayerNetwork':
             hidden_size = 12
@@ -107,13 +103,10 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
         return model
     
     def gen_output_feature(self, x, y):
-        """Generates features from output signal for NN model"""
         y_curr = y[self.num_memory_levels:]
         return np.array([np.real(y_curr), np.imag(y_curr)]).T.astype(np.float32)
     
     def generate_model_output(self, x):
-        """Generate unnormalized output for given input x using trained NN model. 
-        Unlike PNTDNN, this returns raw (non-phase-normalized) predictions."""
         self.nn_model.eval()
         with torch.no_grad():
             xfc = self.gen_input_feature(x)
@@ -125,7 +118,6 @@ class ARVTDNN_NeuralNetwork(NeuralNetwork):
     
     @staticmethod
     def _get_frames(sequence, frame_length, stride):
-        """Extract frames from sequence"""
         n = len(sequence)
         n_frames = (n - frame_length) // stride + 1
         return np.stack([sequence[i*stride:i*stride+frame_length] for i in range(n_frames)])

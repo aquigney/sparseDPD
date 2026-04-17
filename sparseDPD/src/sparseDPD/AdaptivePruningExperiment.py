@@ -7,33 +7,6 @@ from .Experiment import Experiment
 import copy
 
 class AdaptivePruningExperiment(Experiment):
-    """
-    Adaptive binary-search linear (weight-level) pruning for PNTDNN.
-
-    This version adjusts the pruning step size based on the observed NMSE
-    headroom after each accepted step:
-
-    - If pruning has very little effect on NMSE, increase the next prune fraction
-    - If pruning is acceptable and near the limit, decrease the next prune fraction
-    - If pruning is rejected, restore the model and halve the prune fraction
-
-    Parameters
-    ----------
-    nn_model : NeuralNetwork
-        A fully-trained model (e.g. PNTDNN_NeuralNetwork).
-    retrain_epochs : int
-        Maximum fine-tuning epochs after each pruning step.
-    training_dataset, valid_dataset, test_dataset : Dataset
-        The three data splits.
-    nmse_tolerance : float
-        Maximum allowed NMSE increase in dB relative to baseline.
-    initial_prune_fraction : float, optional
-        Initial fraction of remaining weights to attempt removing each step.
-    min_prune_fraction : float, optional
-        Stop when the fraction would drop below this value.
-    max_prune_fraction : float, optional
-        Maximum fraction of remaining weights to prune in one step.
-    """
 
     def __init__(
         self,

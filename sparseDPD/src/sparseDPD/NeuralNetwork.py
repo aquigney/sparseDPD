@@ -22,7 +22,6 @@ class NeuralNetwork:
         self.batch_size = batch_size
     
     def training_data(self, dataset):
-        """Get aligned training data for NN model"""
         if self.forward_model:
             model_training_input, model_training_output = dataset.input_data, dataset.output_data
         else:
@@ -34,7 +33,6 @@ class NeuralNetwork:
  
     
     def build_dataloaders(self, x, y, shuffle=False, num_workers=0, pin_memory=True):
-        """Build dataloaders for dataset with parallel data loading"""
         X = torch.tensor(x, dtype=torch.float32)
         Y = torch.tensor(y, dtype=torch.float32)
         dataset = TensorDataset(X, Y)
@@ -51,7 +49,6 @@ class NeuralNetwork:
         return dataloader
 
     def get_best_model(self, num_epochs, training_dataset, validation_dataset, learning_rate=1e-3, target_nmse = None):
-        """Train model and return the best model based on validation loss"""
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.nn_model.parameters(), lr=learning_rate)
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
@@ -127,7 +124,6 @@ class NeuralNetwork:
         return train_losses, valid_losses, best_epoch
     
     def generate_model_output(self, x):
-        """Generate phase denormalised output for given input x using trained NN model. Return both trimmed input and output"""
         self.nn_model.eval()
         with torch.no_grad():
             xfc = self.gen_input_feature(x)
@@ -142,7 +138,6 @@ class NeuralNetwork:
         return y_pred
     
     def calculate_forward_nmse(self, dataset):
-        """Calculate NMSE for forward model on given dataset"""
         if not self.forward_model:
             raise ValueError("Model is not a forward model")
         y_true = dataset.output_data[self.num_memory_levels:]
@@ -152,7 +147,6 @@ class NeuralNetwork:
     
     
     def prune_model(self, parameters_to_prune_list, prune_amount=0.2):
-        """Apply pruning to the model in-place"""
         parameters_to_prune = []
         named_modules = dict(self.nn_model.named_modules())
 
@@ -179,11 +173,6 @@ class NeuralNetwork:
         )
     
     def make_pruning_permanent(self):
-        """Remove pruning reparameterization by making pruned weights permanent.
-        
-        Converts weight_orig + weight_mask back to regular weight parameters.
-        Call this before saving a pruned model to avoid loading issues.
-        """
         for name, module in self.nn_model.named_modules():
             if isinstance(module, nn.Linear):
                 # Check if this layer has been pruned
@@ -211,7 +200,6 @@ class NeuralNetwork:
         return initial_valid_loss
 
     def _get_pruning_percentage(self):
-        """Calculate the current percentage of pruned weights"""
         total_params = 0
         pruned_params = 0
         for name, module in self.nn_model.named_modules():
@@ -239,10 +227,6 @@ class NeuralNetwork:
     
     @staticmethod
     def plot_valid_curve(valid_losses, best_epoch=None):
-        """
-        Plot validation loss curve
-        """
-
         epochs = np.arange(1, len(valid_losses) + 1)
 
         fig, ax = plt.subplots(figsize=(10, 5))
@@ -306,7 +290,6 @@ class OneLayerNetwork(nn.Module):
 
 
 class OneLayerNetwork_Skip(nn.Module):
-    """OneLayerNetwork with skip connection from input to first hidden layer output"""
     def __init__(self, input_size, hidden_size):
         super(OneLayerNetwork_Skip, self).__init__()
         self.input_size = input_size
@@ -340,7 +323,6 @@ class ThreeLayerNetwork(nn.Module):
 
 
 class ThreeLayerNetwork_Skip(nn.Module):
-    """Three-layer network with skip connections at each layer"""
     def __init__(self, input_size, hidden_size1, hidden_size2):
         super(ThreeLayerNetwork_Skip, self).__init__()
         self.input_size = input_size
@@ -384,7 +366,6 @@ class MultiLayerNetwork(nn.Module):
 
 
 class MultiLayerNetwork_Skip(nn.Module):
-    """Multi-layer network with skip connections from input to each hidden block and output."""
     def __init__(self, input_size, hidden_sizes):
         super(MultiLayerNetwork_Skip, self).__init__()
         self.input_size = input_size
